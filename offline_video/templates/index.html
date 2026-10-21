@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Offline Video</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%23e5322d' d='M3 2l11 6-11 6z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>▶ Offline Video</h1>
+    <p class="muted">Paste a YouTube video or playlist link, download it, watch it any time without internet.</p>
+  </header>
+
+  <main>
+    <form id="add-form" class="card">
+      <textarea id="url" name="url" rows="2" placeholder="https://www.youtube.com/watch?v=…  or  https://www.youtube.com/playlist?list=…  (one per line for several)" required></textarea>
+      <div class="row">
+        <label>Quality
+          <select id="quality" name="quality">
+            {% for q in qualities %}
+              <option value="{{ q }}" {% if q == '720' %}selected{% endif %}>{{ 'Best available' if q == 'best' else ('Audio only' if q == 'audio' else q ~ 'p') }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="subtitles" name="subtitles"> English subtitles</label>
+        <button type="submit">Download</button>
+      </div>
+      <p id="form-error" class="error" hidden></p>
+    </form>
+
+    <section>
+      <div class="section-head">
+        <h2>Downloads</h2>
+        <button id="clear-jobs" class="link">Clear finished</button>
+      </div>
+      <div id="jobs"><p class="muted">Nothing queued.</p></div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Library</h2>
+        <input id="search" type="search" placeholder="Search library…">
+      </div>
+      <div id="library"></div>
+    </section>
+  </main>
+
+  <dialog id="player">
+    <div class="player-head">
+      <h3 id="player-title"></h3>
+      <button id="player-close" class="link" aria-label="Close">✕</button>
+    </div>
+    <video id="video" controls playsinline></video>
+    <p id="player-meta" class="muted"></p>
+    <div class="player-nav">
+      <button id="prev" class="link">⟵ Previous</button>
+      <label class="check"><input type="checkbox" id="autoplay" checked> Autoplay next</label>
+      <button id="next" class="link">Next ⟶</button>
+    </div>
+  </dialog>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
