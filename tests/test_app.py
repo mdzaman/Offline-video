@@ -274,3 +274,15 @@ def test_cancel_all(tmp_path, monkeypatch):
     assert m.cancel_all() == 3
     assert [j.status for j in jobs[1:]] == ["cancelled", "cancelled"]
     gate.set()
+
+
+def test_failed_conversion_is_reported_and_can_be_retried(server, tmp_path, monkeypatch):
+    # Like an FFmpeg build that lacks the needed encoder.
+    monkeypatch.setattr(downloader, "reencode_args", lambda output: ["-c:v", "no_such_encoder"])
+    m = DownloadManager(tmp_path)
+    job = wait(m.submit(f"{server}/clip1.mp4", "360", output="avi"))
+    assert job.status == "error" and job.files == [] and "Could not convert to AVI" in job.error
+    assert m.library() == []
+    monkeypatch.undo()
+    retry = wait(m.submit(f"{server}/clip1.mp4", "360", output="avi"))
+    assert retry.status == "done" and retry.files == ["clip1 [clip1].avi"]

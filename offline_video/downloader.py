@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import itertools
 import json
 import os
@@ -78,16 +79,44 @@ class Cancelled(Exception):
     pass
 
 
-class MpegConvertorPP(FFmpegPostProcessor):
-    """Converts the finished video to MPEG-2 program stream (.mpg), which yt-dlp can't do itself."""
+@functools.lru_cache(maxsize=1)
+def ffmpeg_encoders() -> frozenset[str]:
+    """Names of the encoders the installed FFmpeg supports (builds differ, e.g. Homebrew's lacks libxvid)."""
+    try:
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+    return frozenset(line.split()[1] for line in out.splitlines() if line[:1] == " " and len(line.split()) > 1)
+
+
+def reencode_args(output: str) -> list[str]:
+    """FFmpeg arguments for formats that need re-encoding, using encoders every FFmpeg build has."""
+    if output == "mpeg":
+        return ["-c:v", "mpeg2video", "-q:v", "3", "-c:a", "mp2", "-b:a", "192k"]
+    if output == "avi":
+        audio = "libmp3lame" if "libmp3lame" in ffmpeg_encoders() else "ac3"
+        return ["-c:v", "mpeg4", "-q:v", "3", "-vtag", "XVID", "-c:a", audio, "-b:a", "192k"]
+    raise ValueError(output)
+
+
+class ReencodePP(FFmpegPostProcessor):
+    """Re-encodes the finished video to AVI or MPEG-2 (.mpg). yt-dlp can't make MPEG at all, and its AVI
+    conversion needs libxvid, which many FFmpeg builds don't include."""
+
+    EXTS = {"avi": "avi", "mpeg": "mpg"}
+
+    def __init__(self, downloader, output: str):
+        super().__init__(downloader)
+        self.output = output
 
     def run(self, info):
         path = info["filepath"]
-        out = str(Path(path).with_suffix(".mpg"))
-        self.to_screen(f'Converting video to MPEG: "{out}"')
-        self.run_ffmpeg(path, out, ["-c:v", "mpeg2video", "-q:v", "3", "-c:a", "mp2", "-b:a", "192k"])
+        ext = self.EXTS[self.output]
+        out = str(Path(path).with_suffix("." + ext))
+        self.to_screen(f'Converting video to {self.output.upper()}: "{out}"')
+        self.run_ffmpeg(path, out, reencode_args(self.output))
         info["filepath"] = out
-        info["ext"] = "mpg"
+        info["ext"] = ext
         return [path], info
 
 
@@ -192,11 +221,8 @@ def build_ydl_opts(job: Job, out_dir: Path, hook, pp_hook, post_hook, logger=Non
     elif job.output == "mov":
         opts["merge_output_format"] = "mp4"
         pps.append({"key": "FFmpegVideoRemuxer", "preferedformat": "mov"})
-    elif job.output == "avi":
-        opts["merge_output_format"] = "mp4"
-        pps.append({"key": "FFmpegVideoConvertor", "preferedformat": "avi"})
-    elif job.output == "mpeg":
-        opts["merge_output_format"] = "mp4"
+    elif job.output in ("avi", "mpeg"):
+        opts["merge_output_format"] = "mp4"  # then re-encoded by ReencodePP
     return opts
 
 
@@ -223,7 +249,7 @@ class _Logger:
         pass
 
     def error(self, msg):
-        msg = ANSI_RE.sub("", str(msg)).strip().removeprefix("ERROR:").strip()
+        msg = ANSI_RE.sub("", str(msg)).strip().removeprefix("ERROR:").strip().removeprefix("post hooks: ")
         if "ffmpeg not found" in msg.lower() or "ffprobe not found" in msg.lower():
             msg = FFMPEG_HINT
         self.errors.append(msg)
@@ -379,9 +405,14 @@ class DownloadManager:
                 job.status = "processing"
 
         def post_hook(filepath):
-            # Called by yt-dlp only once a video has fully finished (downloaded and converted).
+            # Called by yt-dlp once a video has finished downloading and post-processing.
             # Move it and its metadata/thumbnail/subtitles from the staging folder into the library.
             p = Path(filepath).resolve()
+            expected = "." + {"mpeg": "mpg"}.get(job.output, job.output)
+            if has_ffmpeg and p.suffix.lower() != expected:
+                # yt-dlp carries on after a failed conversion; raising here makes it count the video as
+                # failed (and not as downloaded, so it can be retried) instead of keeping the wrong format.
+                raise RuntimeError(f"Could not convert to {job.output.upper()}; the download was discarded")
             if p.is_file():
                 stem = p.name[: -len(p.suffix)]
                 dest_dir = out_dir / p.parent.relative_to(work_dir)
@@ -435,10 +466,13 @@ class DownloadManager:
             check_cancel()
             opts = build_ydl_opts(job, out_dir, hook, pp_hook, post_hook, logger, has_ffmpeg, work_dir)
             with yt_dlp.YoutubeDL(opts) as ydl:
-                if has_ffmpeg and job.output == "mpeg":
-                    ydl.add_post_processor(MpegConvertorPP(ydl), when="post_process")
+                if has_ffmpeg and job.output in ReencodePP.EXTS:
+                    ydl.add_post_processor(ReencodePP(ydl, job.output), when="post_process")
                 ydl.download([job.url])
-            job.failed_items = len(logger.errors)
+            if job.items:
+                job.failed_items = sum(i["status"] == "failed" for i in job.items)
+            else:
+                job.failed_items = 0 if job.completed_items else min(len(logger.errors), 1)
             notes = []
             if not has_ffmpeg and job.completed_items:
                 notes.append("Saved without FFmpeg: this is the best single-file version (often lower quality) "
@@ -447,7 +481,10 @@ class DownloadManager:
             if logger.skipped:
                 notes.append(f"{logger.skipped} already in your library")
             if logger.errors:
-                notes.append(f"{len(logger.errors)} failed (last error: {logger.errors[-1]})")
+                failed = job.failed_items or len(logger.errors)
+                # For a single video the first error is the cause (e.g. FFmpeg's reason a conversion failed).
+                reason = "; ".join(logger.errors) if not job.items else logger.errors[-1]
+                notes.append(f"{failed} failed ({'last error: ' if job.items else ''}{reason})")
             job.error = "; ".join(notes) or None
             job.status = "error" if job.completed_items == 0 and not logger.skipped else "done"
         except Cancelled:
