@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Offline Video</string>
+    <string name="share_label">Download with Offline Video</string>
+    <string name="starting">Starting Offline Video…\n\nThe first start after installing or updating takes up to a minute.</string>
+    <string name="start_timeout">Offline Video is taking too long to start. Close the app (swipe it away) and open it again.</string>
+    <string name="channel_name">Download engine</string>
+    <string name="notification_text">Ready. Downloads continue in the background.</string>
+    <string name="stop">Stop</string>
+    <string name="saving">Saving %1$s…</string>
+    <string name="saved">Saved to %1$s</string>
+    <string name="save_failed">Couldn\'t save: %1$s</string>
+</resources>

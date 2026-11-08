@@ -17,7 +17,8 @@ Download YouTube videos **or whole playlists** to your computer and watch them l
 - **Smart re-downloads:** adding a playlist again only fetches the videos you don't have yet, which is handy for playlists that keep growing.
 - **Your files, your folder:** the page shows where files are saved, lets you change the folder, and has **Open file** and **Show in folder** (Finder / Explorer) buttons for every download.
 - **Built-in library and player:** thumbnails, search, playlists grouped together, next/previous, autoplay, subtitles, and resume where you left off.
-- **iPhone and Android:** scan a QR code to use it from your phone over Wi-Fi, add it to your home screen like an app, and **Save to phone** to watch without internet. Every page works on phones, tablets and computers.
+- **Android app:** the whole downloader runs on the phone, no computer needed. Share a link from the YouTube app to start a download.
+- **iPhone (and Android):** scan a QR code to use the computer's copy from your phone over Wi-Fi, add it to your home screen like an app, and **Save to phone** to watch without internet. Every page works on phones, tablets and computers.
 
 Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [Flask](https://flask.palletsprojects.com/). It runs entirely on your own computer; nothing is uploaded anywhere.
 
@@ -31,12 +32,13 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [Flask](https://flask.
 4. [Install FFmpeg and Deno](#install-ffmpeg-and-deno-needed-for-full-quality)
 5. [How to use it](#how-to-use-it)
 6. [Use it on your iPhone or Android phone](#use-it-on-your-iphone-or-android-phone)
-7. [Updating](#updating)
-8. [Troubleshooting](#troubleshooting)
-9. [Command-line options](#command-line-options)
-10. [For developers](#for-developers)
-11. [Publishing a new version on GitHub](#publishing-a-new-version-on-github)
-12. [Putting your own copy on GitHub](#putting-your-own-copy-on-github)
+7. [Android app (works without a computer)](#android-app-works-without-a-computer)
+8. [Updating](#updating)
+9. [Troubleshooting](#troubleshooting)
+10. [Command-line options](#command-line-options)
+11. [For developers](#for-developers)
+12. [Publishing a new version on GitHub](#publishing-a-new-version-on-github)
+13. [Putting your own copy on GitHub](#putting-your-own-copy-on-github)
 
 ---
 
@@ -52,6 +54,7 @@ No Python needed.
    | Mac with Apple silicon (M1, M2, M3, M4) | `offline-video-macos-apple-silicon.zip` |
    | Windows 10 / 11 | `offline-video-windows.zip` |
    | Linux (64-bit) | `offline-video-linux.zip` |
+   | Android phone | `offline-video-android-arm64.apk`, see [Android app](#android-app-works-without-a-computer) |
 
    On an Intel Mac, use [Option B](#option-b-run-from-the-source-code-on-github). (Not sure which Mac you have? Apple menu → **About This Mac** → *Chip*.)
 3. Unzip it. You get a single file called `offline-video` (`offline-video.exe` on Windows). Move it anywhere you like, e.g. Applications or your Desktop.
@@ -219,21 +222,33 @@ Phones need the secret link inside the QR code; other devices on your Wi-Fi only
 
 ### Why isn't there an App Store / Play Store app?
 
-Apple and Google don't allow apps that download YouTube videos in their stores, and iPhones can't run the download tools (yt-dlp and FFmpeg) as a normal app. So the phone uses the copy running on your computer, as described above.
+Apple and Google don't allow apps that download YouTube videos in their stores. iPhones also can't run the download tools (yt-dlp and FFmpeg) as a normal app, so on an iPhone you use the copy running on your computer, as described above. **Android phones can run the whole thing themselves:** see the next section.
 
-### Android only: run everything on the phone itself
+## Android app (works without a computer)
 
-On Android you can also run Offline Video entirely on the phone, without a computer, using [Termux](https://termux.dev) (install it from [F-Droid](https://f-droid.org/packages/com.termux/); the Play Store version is outdated). This is for confident users:
+The Android app runs the complete downloader on your phone: downloads, format conversion and the library all happen on the phone, over Wi-Fi or mobile data.
 
-```bash
-pkg update && pkg install python git ffmpeg clang
-termux-setup-storage                     # allow access to the phone's storage
-git clone https://github.com/mdzaman/Offline-video.git
-cd Offline-video
-./run.sh --no-browser --dir ~/storage/movies/"Offline Video"
-```
+### Install
 
-Then open <http://127.0.0.1:8000> in Chrome on the phone. Videos are saved in the phone's **Movies/Offline Video** folder, so any video player can open them offline. Keep Termux running while downloading.
+1. On your phone, open the **[latest release](https://github.com/mdzaman/Offline-video/releases/latest)** and download:
+   - `offline-video-android-arm64.apk`, which is right for almost every phone from the last ~8 years, or
+   - `offline-video-android-universal.apk` if you're not sure (bigger download, works on every phone).
+2. Open the downloaded file. Android asks you to allow installing apps from your browser: tap **Settings**, turn on **Allow from this source**, go back and tap **Install**.
+3. If Play Protect warns about an unknown app, tap **More details → Install anyway**. (It isn't from the Play Store, which doesn't allow YouTube downloaders.)
+4. Open **Offline Video**. The first start takes up to a minute while it unpacks its tools.
+
+Requires Android 10 or newer.
+
+### Use
+
+- **Share from YouTube:** in the YouTube app tap **Share → Offline Video**. The link appears in the box; pick a format and tap **Download**. You can also paste links or upload a `.txt` list, just like on a computer.
+- Downloads keep running when you switch apps or turn the screen off (a notification shows the engine is running; tap **Stop** there to quit it).
+- Tap a video in the Library to watch it, even in flight mode.
+- **Save to phone** copies a video to your phone's **Movies/Offline Video** folder (audio to **Music/Offline Video**), where your gallery, file manager and other apps can see it. Files in the app's own library are removed if you uninstall the app; saved copies are kept.
+
+### Updating the Android app
+
+Download the new APK from the Releases page and install it over the old one. If Android says the app **conflicts with an existing package**, the new version was signed with a different key: save the videos you want to keep with **Save to phone**, uninstall the old app, then install the new one. (The project owner can prevent this by setting up a permanent signing key; see [Signing the Android app](#signing-the-android-app).)
 
 ## Updating
 
@@ -283,7 +298,8 @@ offline_video/
 └── static/           # JavaScript and CSS
 tests/test_app.py     # end-to-end tests (local HTTP server, no YouTube needed)
 packaging/launcher.py # entry point for the standalone apps
-.github/workflows/    # ci.yml (tests on every push), release.yml (builds the apps)
+android/              # the Android app (Kotlin) that runs this Python code on the phone
+.github/workflows/    # ci.yml (tests), android.yml (APKs + emulator test), release.yml (publishes)
 ```
 
 Set up and run the tests:
@@ -298,6 +314,31 @@ python -m pytest
 FFmpeg must be installed for the tests. They use generated clips served from a local web server, so they don't need YouTube access.
 
 To contribute: fork the repository on GitHub, create a branch, make your change with a test, push it to your fork and open a pull request. The **Tests** workflow runs on macOS, Windows and Linux for every pull request.
+
+### Building the Android app
+
+The Android app (`android/`) runs the same Python code on the phone. Python 3.12, FFmpeg, FFprobe and QuickJS (the JavaScript engine yt-dlp needs for YouTube) come from [youtubedl-android](https://github.com/JunkFood02/youtubedl-android). `android/build_python_bundle.py` packs `offline_video` plus Flask and yt-dlp into the APK. To build it yourself you need JDK 17, Python 3.12 and the Android SDK (e.g. via Android Studio):
+
+```bash
+cd android
+./gradlew assembleRelease      # APKs end up in app/build/outputs/apk/release/
+```
+
+The **Android** workflow builds the APKs and tests them in an Android emulator (the engine starts, FFmpeg converts on the device, the page loads) on every change.
+
+### Signing the Android app
+
+Android only installs an update if it's signed with the same key as the installed app. Until a permanent key is set up, each release is signed with a temporary key, and users must uninstall before updating. To set up a permanent key (once):
+
+1. Create a key (needs Java's `keytool`), choosing a strong password:
+
+   ```bash
+   keytool -genkeypair -v -keystore offline-video.jks -alias offline-video -keyalg RSA -keysize 4096 -validity 36500
+   base64 -w0 offline-video.jks > offline-video.jks.b64   # on a Mac: base64 -i offline-video.jks -o offline-video.jks.b64
+   ```
+2. In the repository on GitHub go to **Settings → Secrets and variables → Actions → New repository secret** and add:
+   `ANDROID_KEYSTORE_BASE64` (the contents of `offline-video.jks.b64`), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` (`offline-video`) and `ANDROID_KEY_PASSWORD` (the same password, unless you chose a different one).
+3. Keep `offline-video.jks` and its password somewhere safe. If you lose them, users will have to reinstall once more.
 
 ## Publishing a new version on GitHub
 

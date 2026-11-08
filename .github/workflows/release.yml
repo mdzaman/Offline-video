@@ -59,8 +59,12 @@ jobs:
           name: ${{ matrix.asset }}
           path: out/*.zip
 
+  android:
+    uses: ./.github/workflows/android.yml
+    secrets: inherit
+
   publish:
-    needs: build
+    needs: [build, android]
     if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     runs-on: ubuntu-latest
     steps:
@@ -73,7 +77,9 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           target_commitish: ${{ github.sha }}
           name: Offline Video ${{ inputs.tag || github.ref_name }}
-          files: out/*.zip
+          files: |
+            out/*.zip
+            out/*.apk
           generate_release_notes: true
           body: |
             ## Download
@@ -83,6 +89,9 @@ jobs:
             | Mac (Apple silicon: M1/M2/M3/M4) | `offline-video-macos-apple-silicon.zip` |
             | Windows 10/11 | `offline-video-windows.zip` |
             | Linux | `offline-video-linux.zip` |
+            | **Android phone** (most phones) | `offline-video-android-arm64.apk` |
+            | Android, older 32-bit phones | `offline-video-android-armv7.apk` |
+            | Android, not sure which | `offline-video-android-universal.apk` (bigger) |
 
             Unzip, then double-click `offline-video`. A browser tab opens with the app; keep the window
             that appears open while you use it. **Also install FFmpeg and Deno** for full-quality downloads
@@ -90,5 +99,8 @@ jobs:
 
             **Mac:** the first time, right-click the file and choose **Open** (it isn't signed by Apple).
             **Windows:** if SmartScreen appears, click **More info → Run anyway**.
+
+            **Android:** open the `.apk` on your phone and allow installing from your browser when asked.
+            Everything runs on the phone; share a YouTube link to *Offline Video* to download it.
 
             Intel Macs and everyone else can run from source, see the README.

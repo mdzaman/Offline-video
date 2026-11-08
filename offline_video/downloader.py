@@ -209,6 +209,9 @@ def build_ydl_opts(job: Job, out_dir: Path, hook, pp_hook, post_hook, logger=Non
     }
     if logger is not None:
         opts["logger"] = logger
+    if qjs := os.environ.get("OFFLINE_VIDEO_QJS"):
+        # Android app: YouTube needs a JavaScript runtime, and the app ships QuickJS.
+        opts["js_runtimes"] = {"deno": {}, "quickjs": {"path": qjs}}
     if job.subtitles:
         opts.update(
             {
