@@ -7,6 +7,7 @@ as a playlist, which exercises the same code paths as YouTube videos and playlis
 import functools
 import http.server
 import io
+import json
 import shutil
 import subprocess
 import threading
@@ -206,8 +207,8 @@ def test_open_and_change_folder(server, tmp_path, monkeypatch):
     lib = (tmp_path / "lib").resolve()
     assert opened == [(lib / f, False), (lib / f, True), (lib, False)]
     assert c.post("/api/open", json={"path": "../settings.json"}).status_code == 404
-    # Only a browser on the same computer may open files.
-    assert c.post("/api/open", json={"path": f}, environ_base={"REMOTE_ADDR": "192.168.1.5"}).status_code == 403
+    # Other devices without the phone link are turned away (connected phones get 403, see the phone tests).
+    assert c.post("/api/open", json={"path": f}, environ_base={"REMOTE_ADDR": "192.168.1.5"}).status_code == 401
 
     new_dir = tmp_path / "Movies" / "YouTube"
     r = c.post("/api/settings", json={"library_dir": str(new_dir)})
@@ -286,3 +287,77 @@ def test_failed_conversion_is_reported_and_can_be_retried(server, tmp_path, monk
     monkeypatch.undo()
     retry = wait(m.submit(f"{server}/clip1.mp4", "360", output="avi"))
     assert retry.status == "done" and retry.files == ["clip1 [clip1].avi"]
+
+
+PHONE = {"REMOTE_ADDR": "192.168.1.50"}  # a request coming from another device on the Wi-Fi
+
+
+def test_phones_need_the_secret_link(tmp_path):
+    app = create_app(str(tmp_path / "lib"), settings_file=tmp_path / "settings.json")
+    key = app.config["settings"]["access_key"]
+    c = app.test_client()
+
+    locked = c.get("/", environ_base=PHONE)
+    assert locked.status_code == 401 and b"Connect this phone" in locked.data
+    assert c.get("/api/library", environ_base=PHONE).status_code == 401
+    assert c.get(f"/?key=wrong", environ_base=PHONE).status_code == 401
+
+    # Scanning the QR code: the key is accepted and remembered in a cookie.
+    first = c.get(f"/?key={key}", environ_base=PHONE)
+    assert first.status_code == 200 and b'class="is-remote"' in first.data
+    assert f"ov_key={key}" in first.headers["Set-Cookie"]
+    status = c.get("/api/status", environ_base=PHONE)
+    assert status.status_code == 200 and status.json["local"] is False
+    # Computer-only actions stay blocked for phones.
+    assert c.post("/api/open", json={"path": ""}, environ_base=PHONE).status_code == 403
+    assert c.post("/api/phone", json={"enabled": True}, environ_base=PHONE).status_code == 403
+
+    # The home-screen app starts with the key, because it doesn't share the browser's cookies.
+    assert c.get("/manifest.webmanifest", environ_base=PHONE).json["start_url"] == f"/?key={key}"
+    assert c.get("/static/icons/icon-192.png", environ_base=PHONE).status_code == 200
+
+    # A new link disconnects phones using the old one.
+    new = c.post("/api/phone/new-key").json  # from the computer
+    assert new["enabled"] is False
+    assert c.get("/api/status", environ_base=PHONE).status_code == 401
+
+    # The computer itself never needs the key.
+    assert create_app(str(tmp_path / "lib"), settings_file=tmp_path / "settings.json").test_client().get("/").status_code == 200
+
+
+def test_save_to_phone_downloads_the_file(server, tmp_path):
+    app = create_app(str(tmp_path), settings_file=tmp_path / "settings.json")
+    c = app.test_client()
+    r = c.post("/api/downloads", json={"url": f"{server}/clip1.mp4"})
+    job = wait(app.config["manager"].jobs[r.json["jobs"][0]["id"]])
+    resp = c.get("/media/" + job.files[0] + "?download=1")
+    assert resp.status_code == 200
+    assert resp.headers["Content-Disposition"].startswith("attachment")
+    assert "clip1" in resp.headers["Content-Disposition"]
+    resp.close()
+
+
+def test_phone_access_switch_starts_a_wifi_server(tmp_path, monkeypatch):
+    import urllib.request
+
+    from offline_video import phone as phone_module
+
+    monkeypatch.setattr(phone_module, "lan_ip", lambda: "127.0.0.1")  # stand-in for the Wi-Fi address
+    app = create_app(str(tmp_path / "lib"), settings_file=tmp_path / "settings.json")
+    c = app.test_client()
+    on = c.post("/api/phone", json={"enabled": True}).json
+    try:
+        assert on["enabled"] and on["error"] is None and "<svg" in on["qr"]
+        key = app.config["settings"]["access_key"]
+        assert on["url"].startswith("http://127.0.0.1:") and on["url"].endswith(f"/?key={key}")
+        with urllib.request.urlopen(on["url"].replace("/?key=", "/api/status?key="), timeout=5) as r:
+            assert json.loads(r.read())["version"]
+        # Remembered for the next start.
+        assert json.loads((tmp_path / "settings.json").read_text())["phone_access"] is True
+    finally:
+        off = c.post("/api/phone", json={"enabled": False}).json
+    assert off["enabled"] is False and off["url"] is None
+
+    monkeypatch.setattr(phone_module, "lan_ip", lambda: None)
+    err = c.post("/api/phone", json={"enabled": True}).json
+    assert err["enabled"] is False and "network" in err["error"]

@@ -1,6 +1,9 @@
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const mediaUrl = (rel) => "/media/" + rel.split("/").map(encodeURIComponent).join("/");
+const saveUrl = (rel) => mediaUrl(rel) + "?download=1";
+// true when this page is open on another device (a phone) rather than the computer running the app
+const isRemote = () => document.body.classList.contains("is-remote");
 
 function fmtDuration(s) {
   if (!s) return "";
@@ -23,10 +26,47 @@ let hasFfmpeg = true;
 async function loadStatus() {
   const st = await (await fetch("/api/status")).json();
   hasFfmpeg = st.ffmpeg;
+  document.body.classList.toggle("is-remote", !st.local);
+  $("#remote-note").hidden = st.local;
   $("#library-dir").textContent = st.library_dir;
   $("#ffmpeg-warning").hidden = st.ffmpeg;
   updateFormatNote();
+  if (st.local) loadPhone();
 }
+
+// ---- phone access (only shown on the computer) -------------------------
+function showPhone(p) {
+  $("#phone-toggle").checked = p.enabled;
+  $("#phone-on").hidden = !p.enabled;
+  $("#phone-error").hidden = !p.error;
+  $("#phone-error").textContent = p.error || "";
+  $("#phone-summary").textContent = p.enabled ? "On — scan the code with your phone" : "iPhone or Android, on the same Wi-Fi";
+  if (p.enabled) {
+    $("#phone-qr").innerHTML = p.qr;
+    $("#phone-url").textContent = p.url;
+  }
+}
+
+async function loadPhone() {
+  const res = await fetch("/api/phone");
+  if (res.ok) showPhone(await res.json());
+}
+
+$("#phone-toggle").addEventListener("change", async (e) => {
+  const res = await fetch("/api/phone", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: e.target.checked }),
+  });
+  const p = await res.json();
+  showPhone(p);
+  if (p.enabled) $("#phone-panel").open = true;
+});
+
+$("#phone-new-key").addEventListener("click", async () => {
+  if (!confirm("Make a new link? Phones using the current link will need to scan the new code.")) return;
+  showPhone(await (await fetch("/api/phone/new-key", { method: "POST" })).json());
+});
 
 function updateFormatNote() {
   const out = $("#output").value;
@@ -39,6 +79,7 @@ function updateFormatNote() {
     mpeg: "MPEG needs re-encoding, which takes a while. Use Open file to watch it.",
   };
   let note = notes[out] || "";
+  if (isRemote()) note = note.replace("use Open file (VLC, IINA…)", "save it to the phone and open it with VLC").replace("Use Open file to watch it.", "Save it to the phone and open it with VLC.");
   if (!hasFfmpeg && !["mp4", "m4a"].includes(out)) note = "Needs FFmpeg (see above). Without it you'll get MP4/M4A instead.";
   $("#format-note").textContent = note;
 }
@@ -204,6 +245,11 @@ function renderJob(j) {
 
 function jobLinks(j) {
   if (!j.files.length) return "";
+  if (isRemote()) {
+    return j.files.length === 1
+      ? `<div class="job-links"><a class="link" href="${saveUrl(j.files[0])}" download>Save to phone</a></div>`
+      : "";
+  }
   if (j.files.length === 1) {
     const f = j.files[0];
     return `<div class="job-links"><button class="link" data-open="${esc(f)}">Open file</button>
@@ -286,8 +332,9 @@ function tile(i) {
       <div class="m">${esc([i.channel, fmtBytes(i.size)].filter(Boolean).join(" · "))}<span class="fmt">${esc(i.format.toUpperCase())}</span></div>
       <div class="path" title="${esc(i.path)}">${esc(i.path)}</div>
       <div class="actions">
-        <button class="link" data-open="${esc(i.media_url)}">Open file</button>
-        <button class="link" data-reveal="${esc(i.media_url)}">Show in folder</button>
+        <button class="link local-only" data-open="${esc(i.media_url)}">Open file</button>
+        <button class="link local-only" data-reveal="${esc(i.media_url)}">Show in folder</button>
+        <a class="link remote-only save" href="${saveUrl(i.media_url)}" download>Save to phone</a>
         <button class="link del" data-delete="${esc(i.id)}">Delete</button>
       </div>
     </div>
@@ -300,14 +347,19 @@ $("#library").addEventListener("click", async (e) => {
   const playBtn = e.target.closest("[data-play]");
   if (playBtn) {
     const item = library.find((i) => i.id === playBtn.dataset.play);
-    // Formats browsers can't play (MKV, AVI, MPEG…) open in the computer's own player instead.
-    if (item && !BROWSER_PLAYABLE.includes(item.format)) return openPath(item.media_url, false);
+    // Formats browsers can't play (MKV, AVI, MPEG…) open in the computer's own player instead, or on a
+    // phone are saved so a player app (e.g. VLC) can open them.
+    if (item && !BROWSER_PLAYABLE.includes(item.format)) {
+      if (!isRemote()) return openPath(item.media_url, false);
+      location.href = saveUrl(item.media_url);
+      return;
+    }
     return play(playBtn.dataset.play);
   }
   const del = e.target.dataset.delete;
   if (del) {
     const item = library.find((i) => i.id === del);
-    if (!confirm(`Delete "${item?.title}" from this computer?`)) return;
+    if (!confirm(`Delete "${item?.title}" from ${isRemote() ? "the computer's library (copies saved on this phone are kept)" : "this computer"}?`)) return;
     await fetch("/api/library/" + del.split("/").map(encodeURIComponent).join("/"), { method: "DELETE" });
     loadLibrary();
   }
@@ -330,6 +382,7 @@ function play(id) {
 function load(item) {
   video.querySelectorAll("track").forEach((t) => t.remove());
   video.src = mediaUrl(item.media_url);
+  $("#player-save").href = saveUrl(item.media_url);
   if (item.is_audio && item.thumbnail_url) video.poster = mediaUrl(item.thumbnail_url); else video.removeAttribute("poster");
   item.subtitles.forEach((s, n) => {
     const t = document.createElement("track");
@@ -357,7 +410,9 @@ function step(d) {
 }
 
 video.addEventListener("error", () => {
-  $("#player-meta").textContent = "This browser can't play this file. Use \"Open file\" to watch it in your computer's player.";
+  $("#player-meta").textContent = isRemote()
+    ? "This phone can't play this file here. Tap \"Save to phone\" and open it with a player app such as VLC."
+    : "This browser can't play this file. Use \"Open file\" to watch it in your computer's player.";
 });
 video.addEventListener("ended", () => {
   try { localStorage.removeItem("pos:" + playlistQueue[playingIndex].id); } catch {}

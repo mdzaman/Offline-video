@@ -17,6 +17,7 @@ Download YouTube videos **or whole playlists** to your computer and watch them l
 - **Smart re-downloads:** adding a playlist again only fetches the videos you don't have yet, which is handy for playlists that keep growing.
 - **Your files, your folder:** the page shows where files are saved, lets you change the folder, and has **Open file** and **Show in folder** (Finder / Explorer) buttons for every download.
 - **Built-in library and player:** thumbnails, search, playlists grouped together, next/previous, autoplay, subtitles, and resume where you left off.
+- **iPhone and Android:** scan a QR code to use it from your phone over Wi-Fi, add it to your home screen like an app, and **Save to phone** to watch without internet. Every page works on phones, tablets and computers.
 
 Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [Flask](https://flask.palletsprojects.com/). It runs entirely on your own computer; nothing is uploaded anywhere.
 
@@ -29,12 +30,13 @@ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [Flask](https://flask.
 3. [Option C: install as a command with pipx](#option-c-install-as-a-command-with-pipx)
 4. [Install FFmpeg and Deno](#install-ffmpeg-and-deno-needed-for-full-quality)
 5. [How to use it](#how-to-use-it)
-6. [Updating](#updating)
-7. [Troubleshooting](#troubleshooting)
-8. [Command-line options](#command-line-options)
-9. [For developers](#for-developers)
-10. [Publishing a new version on GitHub](#publishing-a-new-version-on-github)
-11. [Putting your own copy on GitHub](#putting-your-own-copy-on-github)
+6. [Use it on your iPhone or Android phone](#use-it-on-your-iphone-or-android-phone)
+7. [Updating](#updating)
+8. [Troubleshooting](#troubleshooting)
+9. [Command-line options](#command-line-options)
+10. [For developers](#for-developers)
+11. [Publishing a new version on GitHub](#publishing-a-new-version-on-github)
+12. [Putting your own copy on GitHub](#putting-your-own-copy-on-github)
 
 ---
 
@@ -182,6 +184,57 @@ Offline Video/
     └── 002 - Second video [def456].mp4
 ```
 
+## Use it on your iPhone or Android phone
+
+Your computer does the downloading. Your phone is the remote control and the player, and keeps its own copies for watching offline.
+
+<p align="center"><img src="docs/phone.png" alt="Offline Video on an iPhone" width="640"></p>
+
+### Connect your phone (one time)
+
+1. Start Offline Video on your computer (Option A, B or C above).
+2. On the computer, open **📱 Use on your phone** and tick **Let phones on my Wi-Fi use Offline Video**. A QR code appears.
+
+   <img src="docs/phone-setup.png" alt="The Use on your phone panel with its QR code" width="640">
+
+3. Make sure the phone is on the **same Wi-Fi** as the computer, open the phone's **Camera**, point it at the QR code and tap the link.
+4. Add it to your home screen so it opens like an app:
+   - **iPhone (Safari):** tap **Share** (the square with an arrow) → **Add to Home Screen** → **Add**.
+   - **Android (Chrome):** tap **⋮** → **Add to Home screen** (or **Install app**) → **Add**.
+
+The first time, your computer may ask whether to allow incoming connections (Windows: "Allow access" for private networks; Mac: "Allow"). Say yes, or phones can't connect.
+
+### Using it on the phone
+
+- Paste links, upload a `.txt` list, pick the format and tap **Download**, exactly as on the computer. Downloads run on the computer, so keep it on and awake.
+- Tap a thumbnail to stream it over Wi-Fi.
+- Tap **Save to phone** to keep a copy on the phone and watch **without internet**:
+  - **iPhone:** Safari asks to download it; it goes to the **Files** app → *Downloads*. Open it from there (or share it to Photos/VLC).
+  - **Android:** it goes to the **Downloads** folder; open it from the Files app or any video player.
+  - Phones play MP4 and the audio formats natively. For MKV, AVI or MPEG, install the free **VLC** app.
+
+### Privacy
+
+Phones need the secret link inside the QR code; other devices on your Wi-Fi only see a "Connect this phone" page. To disconnect every phone, click **Make a new link** (then re-scan on the phones you want to keep), or untick phone access. Opening files and changing the save folder only ever work on the computer itself.
+
+### Why isn't there an App Store / Play Store app?
+
+Apple and Google don't allow apps that download YouTube videos in their stores, and iPhones can't run the download tools (yt-dlp and FFmpeg) as a normal app. So the phone uses the copy running on your computer, as described above.
+
+### Android only: run everything on the phone itself
+
+On Android you can also run Offline Video entirely on the phone, without a computer, using [Termux](https://termux.dev) (install it from [F-Droid](https://f-droid.org/packages/com.termux/); the Play Store version is outdated). This is for confident users:
+
+```bash
+pkg update && pkg install python git ffmpeg clang
+termux-setup-storage                     # allow access to the phone's storage
+git clone https://github.com/mdzaman/Offline-video.git
+cd Offline-video
+./run.sh --no-browser --dir ~/storage/movies/"Offline Video"
+```
+
+Then open <http://127.0.0.1:8000> in Chrome on the phone. Videos are saved in the phone's **Movies/Offline Video** folder, so any video player can open them offline. Keep Termux running while downloading.
+
 ## Updating
 
 - **Ready-made app:** download the newest file from the [Releases page](https://github.com/mdzaman/Offline-video/releases) and replace the old one. Your downloads and settings are kept.
@@ -199,27 +252,32 @@ YouTube changes often. **If downloads suddenly start failing, update first**: th
 | "This site can't be reached" at 127.0.0.1:8000 | The app isn't running: start it again (Option A, B or C) and keep its window open. |
 | Port 8000 is used by another program | The app automatically uses the next free port (8001, 8002…) and opens it for you. You can also choose one: `./run.sh --port 9000`. |
 | A video won't play in the browser | Use **Open file** to play it in your computer's player. |
-| **Open file** / **Show in folder** says it only works on the same computer | These buttons only work in a browser on the computer that runs the app. |
+| **Open file** / **Show in folder** says it only works on the same computer | These buttons only work in a browser on the computer that runs the app. On a phone, use **Save to phone**. |
+| Phone can't open the QR code link | Phone and computer must be on the same Wi-Fi (not mobile data, not a guest network). Allow the app through the computer's firewall. Some public/office Wi-Fi blocks devices from seeing each other. |
+| Phone shows "Connect this phone" | Scan the QR code again; the link may have been renewed with **Make a new link**. |
+| The home-screen app on iPhone stopped connecting | Open the QR code link again in Safari and re-add it to the home screen. |
 | Mac: "cannot be opened because the developer cannot be verified" | Right-click the app → **Open** → **Open** (once). |
 | Windows: `winget` not found | Install "App Installer" from the Microsoft Store, or install [FFmpeg](https://www.gyan.dev/ffmpeg/builds/) and [Python](https://www.python.org/downloads/) manually. |
 
 ## Command-line options
 
 ```text
-offline-video [--port 8000] [--host 127.0.0.1] [--dir FOLDER] [--workers 1] [--no-browser] [--version]
+offline-video [--port 8000] [--host 127.0.0.1] [--dir FOLDER] [--workers 1] [--phone] [--no-browser] [--version]
 ```
 
 Use the same options with `./run.sh`, `run.bat` or `python -m offline_video`.
 
 - `--dir`: folder to save downloads to (also settable on the page, or with the `OFFLINE_VIDEO_DIR` environment variable). The folder chosen on the page is stored in `~/.offline_video.json`.
 - `--workers`: how many downloads run at the same time.
-- `--host 0.0.0.0`: lets phones and other devices on your home network use the app at `http://<this-computer's-IP>:8000`. There is no password, so only do this on a network you trust. Opening files and changing the folder are always limited to the computer itself.
+- `--phone`: turns on phone access at start-up and prints the QR code in the terminal (same as ticking it on the page; the choice is remembered).
+- `--host 0.0.0.0`: listen on every network interface. Other devices still need the secret phone link.
 
 ## For developers
 
 ```
 offline_video/
 ├── app.py            # Flask web server and API
+├── phone.py          # phone access: Wi-Fi server, secret link, QR code
 ├── downloader.py     # download queue, yt-dlp options, format conversion, library
 ├── templates/        # the page
 └── static/           # JavaScript and CSS

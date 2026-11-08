@@ -2,18 +2,33 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Offline Video</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%23e5322d' d='M3 2l11 6-11 6z'/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#f6f6f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#111114" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Offline Video">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+  <link rel="icon" href="{{ url_for('static', filename='icons/icon-192.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
+<body{% if remote %} class="is-remote"{% endif %}>
   <header>
     <h1>▶ Offline Video</h1>
     <p class="muted">Paste a YouTube video or playlist link, download it, watch it any time without internet.</p>
   </header>
 
   <main>
+    <div id="remote-note" class="card note"{% if not remote %} hidden{% endif %}>
+      📱 <strong>Connected to your computer.</strong> Downloads are saved on the computer. To watch without
+      internet on this phone, tap <strong>Save to phone</strong> on a video in the Library.
+      <span class="add-home">Tip: add this page to your home screen to open it like an app
+      (iPhone: Share → <em>Add to Home Screen</em>; Android: ⋮ → <em>Add to Home screen</em>).</span>
+    </div>
+
     <div id="ffmpeg-warning" class="card warn" hidden>
       <strong>FFmpeg is not installed.</strong> Downloads still work, but only as single-file versions
       (often 360p–720p MP4) and can't be converted to other formats. To fix, install it and reload this page:
@@ -21,13 +36,13 @@
     </div>
 
     <form id="add-form" class="card">
-      <textarea id="url" name="url" rows="3" placeholder="Paste a video or playlist link, or many links (one per line)&#10;https://www.youtube.com/watch?v=…&#10;https://www.youtube.com/playlist?list=…"></textarea>
+      <textarea id="url" name="url" rows="3" placeholder="Paste YouTube links here: a video, a playlist, or many links (one per line)"></textarea>
       <div class="upload-row">
         <button type="button" id="upload-btn" class="secondary">📄 Upload a .txt list of links</button>
         <input type="file" id="upload-file" accept=".txt,.csv,.list,text/plain,text/csv" hidden>
-        <span class="muted small-inline">or drop a text file on the box above. Playlist links download every video in the playlist.</span>
+        <span class="muted small-inline"><span class="desktop-only">or drop a text file on the box above. </span>Playlist links download every video in the playlist.</span>
       </div>
-      <div class="row">
+      <div class="row options">
         <label>Format
           <select id="output" name="output">
             <optgroup label="Video">
@@ -49,7 +64,7 @@
         <button type="submit">Download</button>
       </div>
       <p id="format-note" class="muted small"></p>
-      <div class="location">
+      <div class="location local-only">
         <span class="muted">Saving to:</span>
         <code id="library-dir">…</code>
         <button type="button" id="open-library" class="link">Open folder</button>
@@ -59,10 +74,32 @@
       <p id="form-ok" class="ok" hidden></p>
     </form>
 
+    <details id="phone-panel" class="card local-only">
+      <summary><strong>📱 Use on your phone</strong> <span class="muted" id="phone-summary">iPhone or Android, on the same Wi-Fi</span></summary>
+      <div class="phone-body">
+        <label class="check switch"><input type="checkbox" id="phone-toggle"> Let phones on my Wi-Fi use Offline Video</label>
+        <p id="phone-error" class="error" hidden></p>
+        <div id="phone-on" hidden>
+          <div class="phone-qr">
+            <div id="phone-qr"></div>
+            <ol>
+              <li>Connect your phone to the same Wi-Fi as this computer.</li>
+              <li>Open the phone's camera and point it at the code, then tap the link.</li>
+              <li>Add it to your home screen to open it like an app (iPhone: Share → <em>Add to Home Screen</em>; Android: ⋮ → <em>Add to Home screen</em>).</li>
+            </ol>
+          </div>
+          <p class="small">Or type this address on the phone: <code id="phone-url"></code></p>
+          <p class="muted small">Downloads still run and are saved on this computer, so keep it on and awake. On the phone, tap
+            <strong>Save to phone</strong> to keep a copy for watching without internet. Only phones with this link can connect.
+            <button type="button" id="phone-new-key" class="link">Make a new link</button> (disconnects phones using the old one).</p>
+        </div>
+      </div>
+    </details>
+
     <section>
       <div class="section-head">
         <h2>Downloads</h2>
-        <div>
+        <div class="head-actions">
           <button id="cancel-all" class="link">Cancel all</button>
           <button id="clear-jobs" class="link">Clear finished</button>
         </div>
@@ -82,15 +119,16 @@
   <dialog id="player">
     <div class="player-head">
       <h3 id="player-title"></h3>
-      <button id="player-close" class="link" aria-label="Close">✕</button>
+      <button id="player-close" class="icon-btn" aria-label="Close">✕</button>
     </div>
     <video id="video" controls playsinline></video>
     <p id="player-meta" class="muted"></p>
     <div class="player-nav">
-      <button id="prev" class="link">⟵ Previous</button>
+      <button id="prev" class="secondary">⟵ Previous</button>
       <label class="check"><input type="checkbox" id="autoplay" checked> Autoplay next</label>
-      <button id="player-open" class="link">Open file</button>
-      <button id="next" class="link">Next ⟶</button>
+      <button id="player-open" class="secondary local-only">Open file</button>
+      <a id="player-save" class="secondary remote-only" href="#" download>Save to phone</a>
+      <button id="next" class="secondary">Next ⟶</button>
     </div>
   </dialog>
 
