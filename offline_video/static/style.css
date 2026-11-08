@@ -1,9 +1,10 @@
 :root {
+  --warn-bg: #fff6e0; --warn-border: #f0c36d;
   --bg: #f6f6f8; --fg: #16161a; --muted: #6b6b76; --card: #fff; --border: #e3e3ea;
   --accent: #e5322d; --accent-fg: #fff; --ok: #1e8e3e; --err: #c5221f; --bar: #eee;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #111114; --fg: #ececf1; --muted: #9a9aa6; --card: #1b1b20; --border: #2c2c34; --bar: #2a2a31; --ok: #5bd17a; --err: #ff7b72; }
+  :root { --bg: #111114; --fg: #ececf1; --muted: #9a9aa6; --card: #1b1b20; --border: #2c2c34; --bar: #2a2a31; --ok: #5bd17a; --err: #ff7b72; --warn-bg: #2e2612; --warn-border: #6b5520; }
 }
 * { box-sizing: border-box; }
 body { margin: 0; font: 15px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--fg); }
@@ -69,3 +70,15 @@ video { width: 100%; max-height: 70vh; background: #000; border-radius: 8px; }
   button[type=submit] { width: 100%; margin-left: 0; }
   .grid { grid-template-columns: 1fr 1fr; gap: 10px; }
 }
+
+.small { font-size: 13px; margin-top: 8px; }
+.warn { background: var(--warn-bg); border-color: var(--warn-border); margin-top: 20px; font-size: 14px; }
+code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; overflow-wrap: anywhere; }
+.location { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 14px; }
+.location button.link, .job-links button.link { color: var(--accent); }
+.job-links { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; font-size: 13px; }
+.job-links button.link { padding: 0; font-size: 13px; }
+.tile .path { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; font-family: ui-monospace, Menlo, monospace; }
+.tile .fmt { font-size: 10px; font-weight: 700; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 4px; vertical-align: 1px; }
+.tile .actions { flex-wrap: wrap; gap: 2px 8px; justify-content: flex-start; }
+.tile .actions .del { margin-left: auto; }

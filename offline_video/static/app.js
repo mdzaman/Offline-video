@@ -15,6 +15,69 @@ function fmtBytes(b) {
   return b.toFixed(i ? 1 : 0) + " " + u[i];
 }
 
+// ---- status, save location, opening files ------------------------------
+const AUDIO = ["mp3", "m4a", "wav", "flac", "opus", "ogg"];
+const BROWSER_PLAYABLE = ["mp4", "webm", "m4a", "mp3", "aac", "wav", "flac", "opus", "ogg", "mov"];
+let hasFfmpeg = true;
+
+async function loadStatus() {
+  const st = await (await fetch("/api/status")).json();
+  hasFfmpeg = st.ffmpeg;
+  $("#library-dir").textContent = st.library_dir;
+  $("#ffmpeg-warning").hidden = st.ffmpeg;
+  updateFormatNote();
+}
+
+function updateFormatNote() {
+  const out = $("#output").value;
+  $("#quality").disabled = AUDIO.includes(out);
+  const notes = {
+    mkv: "MKV keeps the original streams; most browsers can't play it here, use Open file (VLC, IINA…).",
+    webm: "WebM may be re-encoded if the video isn't available as WebM, which takes longer.",
+    mov: "MOV plays in QuickTime and Safari.",
+    avi: "AVI needs re-encoding, which takes a while. Use Open file to watch it.",
+    mpeg: "MPEG needs re-encoding, which takes a while. Use Open file to watch it.",
+  };
+  let note = notes[out] || "";
+  if (!hasFfmpeg && !["mp4", "m4a"].includes(out)) note = "Needs FFmpeg (see above). Without it you'll get MP4/M4A instead.";
+  $("#format-note").textContent = note;
+}
+$("#output").addEventListener("change", updateFormatNote);
+
+async function openPath(path, reveal) {
+  const res = await fetch("/api/open", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, reveal }),
+  });
+  if (res.status === 403) alert("Files can only be opened from a browser on the computer running Offline Video.");
+  else if (!res.ok) alert((await res.json().catch(() => ({}))).error || "Couldn't open it.");
+}
+
+$("#open-library").addEventListener("click", () => openPath("", false));
+$("#change-library").addEventListener("click", async () => {
+  const dir = prompt("Save downloads to this folder (full path, e.g. /Users/you/Movies/YouTube):", $("#library-dir").textContent);
+  if (!dir) return;
+  const res = await fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ library_dir: dir }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return alert(data.error || "Couldn't use that folder.");
+  await loadStatus();
+  loadLibrary();
+});
+
+// Buttons with data-open / data-reveal anywhere on the page open files in the OS.
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-open],[data-reveal]");
+  if (!b) return;
+  e.preventDefault();
+  if (b.dataset.open !== undefined) openPath(b.dataset.open, false);
+  else openPath(b.dataset.reveal, true);
+});
+
 // ---- adding downloads --------------------------------------------------
 $("#add-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -23,7 +86,7 @@ $("#add-form").addEventListener("submit", async (e) => {
   const res = await fetch("/api/downloads", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: $("#url").value, quality: $("#quality").value, subtitles: $("#subtitles").checked }),
+    body: JSON.stringify({ url: $("#url").value, quality: $("#quality").value, output: $("#output").value, subtitles: $("#subtitles").checked }),
   });
   if (!res.ok) {
     err.textContent = (await res.json().catch(() => ({}))).error || "Could not add download";
@@ -31,12 +94,14 @@ $("#add-form").addEventListener("submit", async (e) => {
     return;
   }
   $("#url").value = "";
-  pollJobs();
+  loadStatus();
+pollJobs();
 });
 
 $("#clear-jobs").addEventListener("click", async () => {
   await fetch("/api/jobs/clear", { method: "POST" });
-  pollJobs();
+  loadStatus();
+pollJobs();
 });
 
 // ---- job list ----------------------------------------------------------
@@ -62,6 +127,7 @@ function renderJob(j) {
       <div class="title">${esc(j.title || j.url)}</div>
       <div class="sub">${esc(parts.join(" · ") || j.url)}</div>
       ${j.error ? `<div class="sub msg">${esc(j.error)}</div>` : ""}
+      ${jobLinks(j)}
     </div>
     <div>
       <span class="badge">${esc(j.status)}</span>
@@ -69,6 +135,16 @@ function renderJob(j) {
     </div>
     <div class="bar"><div style="width:${Math.min(100, overall).toFixed(1)}%"></div></div>
   </div>`;
+}
+
+function jobLinks(j) {
+  if (!j.files.length) return "";
+  if (j.files.length === 1) {
+    const f = j.files[0];
+    return `<div class="job-links"><button class="link" data-open="${esc(f)}">Open file</button>
+      <button class="link" data-reveal="${esc(f)}">Show in folder</button></div>`;
+  }
+  return `<div class="job-links"><button class="link" data-reveal="${esc(j.files[0])}">Show in folder</button></div>`;
 }
 
 async function pollJobs() {
@@ -90,7 +166,8 @@ $("#jobs").addEventListener("click", async (e) => {
   const id = e.target.dataset.cancel;
   if (!id) return;
   await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
-  pollJobs();
+  loadStatus();
+pollJobs();
 });
 
 // ---- library -----------------------------------------------------------
@@ -130,10 +207,12 @@ function tile(i) {
     </button>
     <div class="info">
       <div class="t" title="${esc(i.title)}">${i.playlist_index ? i.playlist_index + ". " : ""}${esc(i.title)}</div>
-      <div class="m">${esc([i.channel, fmtBytes(i.size)].filter(Boolean).join(" · "))}</div>
+      <div class="m">${esc([i.channel, fmtBytes(i.size)].filter(Boolean).join(" · "))}<span class="fmt">${esc(i.format.toUpperCase())}</span></div>
+      <div class="path" title="${esc(i.path)}">${esc(i.path)}</div>
       <div class="actions">
-        <a href="${mediaUrl(i.media_url)}" download>Save file</a>
-        <button class="link" data-delete="${esc(i.id)}">Delete</button>
+        <button class="link" data-open="${esc(i.media_url)}">Open file</button>
+        <button class="link" data-reveal="${esc(i.media_url)}">Show in folder</button>
+        <button class="link del" data-delete="${esc(i.id)}">Delete</button>
       </div>
     </div>
   </div>`;
@@ -143,7 +222,12 @@ $("#search").addEventListener("input", renderLibrary);
 
 $("#library").addEventListener("click", async (e) => {
   const playBtn = e.target.closest("[data-play]");
-  if (playBtn) return play(playBtn.dataset.play);
+  if (playBtn) {
+    const item = library.find((i) => i.id === playBtn.dataset.play);
+    // Formats browsers can't play (MKV, AVI, MPEG…) open in the computer's own player instead.
+    if (item && !BROWSER_PLAYABLE.includes(item.format)) return openPath(item.media_url, false);
+    return play(playBtn.dataset.play);
+  }
   const del = e.target.dataset.delete;
   if (del) {
     const item = library.find((i) => i.id === del);
@@ -161,7 +245,7 @@ function play(id) {
   const item = library.find((i) => i.id === id);
   if (!item) return;
   // Next/previous move through the same playlist (or the loose videos).
-  playlistQueue = library.filter((i) => (i.playlist || "") === (item.playlist || ""));
+  playlistQueue = library.filter((i) => (i.playlist || "") === (item.playlist || "") && BROWSER_PLAYABLE.includes(i.format));
   playingIndex = playlistQueue.indexOf(item);
   load(item);
   if (!dialog.open) dialog.showModal();
@@ -197,7 +281,7 @@ function step(d) {
 }
 
 video.addEventListener("error", () => {
-  $("#player-meta").textContent = "This browser can't play this file's format. Use \"Save file\" and open it in a media player such as VLC.";
+  $("#player-meta").textContent = "This browser can't play this file. Use \"Open file\" to watch it in your computer's player.";
 });
 video.addEventListener("ended", () => {
   try { localStorage.removeItem("pos:" + playlistQueue[playingIndex].id); } catch {}
@@ -206,6 +290,8 @@ video.addEventListener("ended", () => {
 $("#prev").addEventListener("click", () => step(-1));
 $("#next").addEventListener("click", () => step(1));
 $("#player-close").addEventListener("click", () => dialog.close());
+$("#player-open").addEventListener("click", () => openPath(playlistQueue[playingIndex].media_url, false));
 dialog.addEventListener("close", () => { video.pause(); });
 
+loadStatus();
 pollJobs();

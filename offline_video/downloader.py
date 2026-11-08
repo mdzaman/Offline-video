@@ -5,6 +5,10 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
+import shutil
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -12,30 +16,69 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import yt_dlp
+from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
 
-VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".m4a", ".mp3", ".opus", ".ogg"}
+VIDEO_OUTPUTS = ["mp4", "mkv", "webm", "mov", "avi", "mpeg"]
+AUDIO_OUTPUTS = ["mp3", "m4a", "wav", "flac", "opus", "ogg"]
+QUALITIES = ["best", "1080", "720", "480", "360"]
+
+AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".opus", ".ogg"}
+MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpg", ".mpeg", ".flv"} | AUDIO_EXTS
 THUMB_EXTS = (".jpg", ".jpeg", ".png", ".webp")
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-# Formats are chosen so the result plays in a browser <video> element (mp4/h264 + m4a/aac)
-# when possible, falling back to whatever is available.
-QUALITY_FORMATS = {
-    "best": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
-    "1080": "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/bv*[height<=1080]+ba/b[height<=1080]/b",
-    "720": "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/bv*[height<=720]+ba/b[height<=720]/b",
-    "480": "bv*[height<=480][ext=mp4]+ba[ext=m4a]/b[height<=480][ext=mp4]/bv*[height<=480]+ba/b[height<=480]/b",
-    "360": "bv*[height<=360][ext=mp4]+ba[ext=m4a]/b[height<=360][ext=mp4]/bv*[height<=360]+ba/b[height<=360]/b",
-    "audio": "ba[ext=m4a]/ba/b",
-}
+FFMPEG_HINT = (
+    "FFmpeg is not installed. Install it (Mac: brew install ffmpeg, Windows: winget install ffmpeg, "
+    "Linux: sudo apt install ffmpeg) and try again."
+)
+
+
+def ffmpeg_available() -> bool:
+    return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+
+
+def _height(quality: str) -> str:
+    return "" if quality == "best" else f"[height<={quality}]"
+
+
+def format_selector(quality: str, output: str, has_ffmpeg: bool) -> str:
+    h = _height(quality)
+    if output in AUDIO_OUTPUTS:
+        return "ba[ext=m4a]/ba/b" if has_ffmpeg or output != "m4a" else "ba[ext=m4a]/b[ext=mp4]/b"
+    if not has_ffmpeg:
+        # Without FFmpeg, separate video and audio streams can't be merged, so only formats that
+        # already contain both are usable (on YouTube that usually means up to 360p/720p MP4).
+        return f"b{h}[ext=mp4]/b{h}/b[ext=mp4]/b"
+    if output == "webm":
+        return f"bv*{h}[ext=webm]+ba[ext=webm]/b{h}[ext=webm]/bv*{h}+ba/b{h}/b"
+    if output == "mkv":
+        return f"bv*{h}+ba/b{h}/b"
+    # mp4 / mov / avi / mpeg: start from H.264 + AAC, which plays everywhere and remuxes cheaply.
+    return f"bv*{h}[ext=mp4]+ba[ext=m4a]/b{h}[ext=mp4]/bv*{h}+ba/b{h}/b"
 
 
 class Cancelled(Exception):
     pass
 
 
+class MpegConvertorPP(FFmpegPostProcessor):
+    """Converts the finished video to MPEG-2 program stream (.mpg), which yt-dlp can't do itself."""
+
+    def run(self, info):
+        path = info["filepath"]
+        out = str(Path(path).with_suffix(".mpg"))
+        self.to_screen(f'Converting video to MPEG: "{out}"')
+        self.run_ffmpeg(path, out, ["-c:v", "mpeg2video", "-q:v", "3", "-c:a", "mp2", "-b:a", "192k"])
+        info["filepath"] = out
+        info["ext"] = "mpg"
+        return [path], info
+
+
 @dataclass
 class Job:
     url: str
     quality: str = "720"
+    output: str = "mp4"
     subtitles: bool = False
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     status: str = "queued"  # queued | downloading | processing | done | error | cancelled
@@ -50,6 +93,7 @@ class Job:
     speed: float | None = None
     eta: int | None = None
     error: str | None = None
+    files: list[str] = field(default_factory=list)  # library-relative paths of finished files
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     cancel_requested: bool = False
@@ -64,14 +108,23 @@ SINGLE_TEMPLATE = "%(title).150B [%(id)s].%(ext)s"
 PLAYLIST_TEMPLATE = "%(playlist_title,playlist|Playlist).100B/%(playlist_index)03d - %(title).150B [%(id)s].%(ext)s"
 
 
-def build_ydl_opts(job: Job, out_dir: Path, hook, pp_hook, logger=None) -> dict:
-    if job.quality not in QUALITY_FORMATS:
+def build_ydl_opts(job: Job, out_dir: Path, hook, pp_hook, post_hook, logger=None, has_ffmpeg=None,
+                   work_dir: Path | None = None) -> dict:
+    """yt-dlp options. Files are written to work_dir (a per-job staging folder) and the archive lives
+    in out_dir (the library)."""
+    if job.quality not in QUALITIES:
         raise ValueError(f"Unknown quality: {job.quality}")
+    if job.output not in VIDEO_OUTPUTS + AUDIO_OUTPUTS:
+        raise ValueError(f"Unknown output format: {job.output}")
+    if has_ffmpeg is None:
+        has_ffmpeg = ffmpeg_available()
     opts = {
-        "format": QUALITY_FORMATS[job.quality],
+        "format": format_selector(job.quality, job.output, has_ffmpeg),
         # Single videos go straight into the library root; playlist items get their own folder.
         "outtmpl": {"default": PLAYLIST_TEMPLATE if job.is_playlist else SINGLE_TEMPLATE},
-        "paths": {"home": str(out_dir), "temp": str(out_dir / ".tmp")},
+        # Staging in a per-job folder stops yt-dlp from reusing (and then deleting) a library file of
+        # the same video in another format as its download.
+        "paths": {"home": str(work_dir or out_dir), "temp": str((work_dir or out_dir) / "part")},
         "windowsfilenames": True,
         "writeinfojson": True,
         "allow_playlist_files": False,
@@ -80,21 +133,16 @@ def build_ydl_opts(job: Job, out_dir: Path, hook, pp_hook, logger=None) -> dict:
         "noprogress": True,
         "quiet": True,
         "no_warnings": True,
-        "download_archive": str(out_dir / ".archive.txt"),
+        "color": {"stdout": "no_color", "stderr": "no_color"},
+        # One archive per output format, so the same video can be kept as e.g. both MP4 and MP3.
+        "download_archive": str(out_dir / f".archive-{job.output}.txt"),
         "progress_hooks": [hook],
         "postprocessor_hooks": [pp_hook],
-        "postprocessors": [
-            {"key": "FFmpegThumbnailsConvertor", "format": "jpg", "when": "before_dl"},
-        ],
+        "post_hooks": [post_hook],
+        "postprocessors": [],
     }
     if logger is not None:
         opts["logger"] = logger
-    if job.quality == "audio":
-        opts["postprocessors"].append(
-            {"key": "FFmpegExtractAudio", "preferredcodec": "m4a"}
-        )
-    else:
-        opts["merge_output_format"] = "mp4"
     if job.subtitles:
         opts.update(
             {
@@ -104,7 +152,31 @@ def build_ydl_opts(job: Job, out_dir: Path, hook, pp_hook, logger=None) -> dict:
                 "subtitlesformat": "vtt/best",
             }
         )
-        opts["postprocessors"].append({"key": "FFmpegSubtitlesConvertor", "format": "vtt"})
+    if not has_ffmpeg:
+        return opts
+
+    pps = opts["postprocessors"]
+    pps.append({"key": "FFmpegThumbnailsConvertor", "format": "jpg", "when": "before_dl"})
+    if job.subtitles:
+        pps.append({"key": "FFmpegSubtitlesConvertor", "format": "vtt"})
+    if job.output in AUDIO_OUTPUTS:
+        codec = {"ogg": "vorbis"}.get(job.output, job.output)
+        pps.append({"key": "FFmpegExtractAudio", "preferredcodec": codec, "preferredquality": "192"})
+    elif job.output in ("mp4", "mkv"):
+        # Merging covers separate video+audio streams; the remux covers single-file downloads.
+        opts["merge_output_format"] = job.output
+        pps.append({"key": "FFmpegVideoRemuxer", "preferedformat": job.output})
+    elif job.output == "webm":
+        opts["merge_output_format"] = "webm/mkv"
+        pps.append({"key": "FFmpegVideoConvertor", "preferedformat": "webm"})
+    elif job.output == "mov":
+        opts["merge_output_format"] = "mp4"
+        pps.append({"key": "FFmpegVideoRemuxer", "preferedformat": "mov"})
+    elif job.output == "avi":
+        opts["merge_output_format"] = "mp4"
+        pps.append({"key": "FFmpegVideoConvertor", "preferedformat": "avi"})
+    elif job.output == "mpeg":
+        opts["merge_output_format"] = "mp4"
     return opts
 
 
@@ -125,28 +197,54 @@ class _Logger:
         pass
 
     def error(self, msg):
-        self.errors.append(str(msg).removeprefix("ERROR: "))
+        msg = ANSI_RE.sub("", str(msg)).strip().removeprefix("ERROR:").strip()
+        if "ffmpeg not found" in msg.lower() or "ffprobe not found" in msg.lower():
+            msg = FFMPEG_HINT
+        self.errors.append(msg)
+
+
+def open_in_os(path: Path, reveal: bool = False) -> None:
+    """Open a file with its default app, or show it in Finder/Explorer/the file manager."""
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", str(path)] if reveal else ["open", str(path)])
+    elif sys.platform == "win32":
+        if reveal and path.is_file():
+            subprocess.Popen(["explorer", "/select,", str(path)])
+        else:
+            os.startfile(str(path))  # noqa: S606 - opening a library file the user asked for
+    else:
+        target = path.parent if reveal and path.is_file() else path
+        subprocess.Popen(["xdg-open", str(target)])
 
 
 class DownloadManager:
     def __init__(self, library_dir: str | os.PathLike, workers: int = 1):
-        self.library_dir = Path(library_dir).resolve()
-        self.library_dir.mkdir(parents=True, exist_ok=True)
+        self.set_library_dir(library_dir)
         self.jobs: dict[str, Job] = {}
         self._lock = threading.Lock()
         self._queue: queue.Queue[str] = queue.Queue()
         for i in range(max(1, workers)):
             threading.Thread(target=self._worker, name=f"dl-worker-{i}", daemon=True).start()
 
+    def set_library_dir(self, library_dir: str | os.PathLike) -> Path:
+        path = Path(library_dir).expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        self.library_dir = path
+        return path
+
     # ---- jobs -------------------------------------------------------------
 
-    def submit(self, url: str, quality: str = "720", subtitles: bool = False) -> Job:
+    def submit(self, url: str, quality: str = "720", subtitles: bool = False, output: str = "mp4") -> Job:
         url = url.strip()
         if not url.startswith(("http://", "https://")):
             raise ValueError("Please enter a full http(s) URL")
-        if quality not in QUALITY_FORMATS:
+        if quality == "audio":  # older clients
+            quality, output = "best", "m4a"
+        if quality not in QUALITIES:
             raise ValueError(f"Unknown quality: {quality}")
-        job = Job(url=url, quality=quality, subtitles=subtitles)
+        if output not in VIDEO_OUTPUTS + AUDIO_OUTPUTS:
+            raise ValueError(f"Unknown output format: {output}")
+        job = Job(url=url, quality=quality, subtitles=subtitles, output=output)
         with self._lock:
             self.jobs[job.id] = job
         self._queue.put(job.id)
@@ -183,7 +281,7 @@ class DownloadManager:
 
     def _run(self, job: Job):
         job.status = "downloading"
-        seen_done: set[str] = set()
+        out_dir = self.library_dir
 
         def check_cancel():
             if job.cancel_requested:
@@ -211,23 +309,35 @@ class DownloadManager:
 
         def pp_hook(d):
             check_cancel()
-            info = d.get("info_dict") or {}
-            if d["status"] == "started" and d.get("postprocessor") in ("Merger", "ExtractAudio"):
+            if d["status"] == "started" and d.get("postprocessor") not in ("MoveFiles", "FFmpegThumbnailsConvertor"):
                 job.status = "processing"
-            if d["status"] == "finished" and d.get("postprocessor") == "MoveFiles":
-                key = info.get("id")
-                if key and key not in seen_done:
-                    seen_done.add(key)
-                    job.completed_items += 1
-                job.status = "downloading"
-                job.percent = 0.0
+
+        def post_hook(filepath):
+            # Called by yt-dlp only once a video has fully finished (downloaded and converted).
+            # Move it and its metadata/thumbnail/subtitles from the staging folder into the library.
+            p = Path(filepath).resolve()
+            if p.is_file():
+                stem = p.name[: -len(p.suffix)]
+                dest_dir = out_dir / p.parent.relative_to(work_dir)
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                for f in list(p.parent.iterdir()):
+                    if f.is_file() and f.name.startswith(stem + "."):
+                        os.replace(f, dest_dir / f.name)
+                job.completed_items += 1
+                job.files.append((dest_dir / p.name).relative_to(out_dir).as_posix())
+            job.status = "downloading"
+            job.percent = 0.0
 
         logger = _Logger()
+        has_ffmpeg = ffmpeg_available()
+        work_dir = (out_dir / ".tmp" / job.id).resolve()
         try:
             # Peek at the URL first (cheap, no format resolution) to learn whether it is a playlist,
             # which decides the output folder layout.
             probe_logger = _Logger()
-            with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "logger": probe_logger}) as ydl:
+            probe_opts = {"quiet": True, "no_warnings": True, "logger": probe_logger,
+                          "color": {"stdout": "no_color", "stderr": "no_color"}}
+            with yt_dlp.YoutubeDL(probe_opts) as ydl:
                 try:
                     info = ydl.extract_info(job.url, download=False, process=False)
                 except yt_dlp.utils.DownloadError:
@@ -243,10 +353,17 @@ class DownloadManager:
                 elif info.get("playlist_count"):
                     job.total_items = info["playlist_count"]
             check_cancel()
-            with yt_dlp.YoutubeDL(build_ydl_opts(job, self.library_dir, hook, pp_hook, logger)) as ydl:
+            opts = build_ydl_opts(job, out_dir, hook, pp_hook, post_hook, logger, has_ffmpeg, work_dir)
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                if has_ffmpeg and job.output == "mpeg":
+                    ydl.add_post_processor(MpegConvertorPP(ydl), when="post_process")
                 ydl.download([job.url])
             job.failed_items = len(logger.errors)
             notes = []
+            if not has_ffmpeg and job.completed_items:
+                notes.append("Saved without FFmpeg: this is the best single-file version (often lower quality) "
+                             "and was not converted. For full quality and other formats, install FFmpeg "
+                             "(Mac: brew install ffmpeg)")
             if logger.skipped:
                 notes.append(f"{logger.skipped} already in your library")
             if logger.errors:
@@ -257,8 +374,9 @@ class DownloadManager:
             job.status = "cancelled"
         except Exception as e:  # noqa: BLE001 - surface any failure to the UI
             job.status = "error"
-            job.error = str(e).removeprefix("ERROR: ")
+            job.error = ANSI_RE.sub("", str(e)).removeprefix("ERROR: ")
         finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
             job.finished_at = time.time()
             job.speed = job.eta = None
 
@@ -267,40 +385,42 @@ class DownloadManager:
     def library(self) -> list[dict]:
         items = []
         for info_path in self.library_dir.rglob("*.info.json"):
-            if ".tmp" in info_path.parts:
-                continue
-            item = self._library_item(info_path)
-            if item:
-                items.append(item)
+            if ".tmp" not in info_path.relative_to(self.library_dir).parts:
+                items.extend(self._library_items(info_path))
         items.sort(key=lambda i: (i["playlist"] or "", i["playlist_index"] or 0, -i["downloaded_at"]))
         return items
 
-    def _library_item(self, info_path: Path) -> dict | None:
+    def _siblings(self, info_path: Path):
+        """Files that belong to the same video as info_path: (media files, thumbnail, subtitles)."""
         stem = info_path.name[: -len(".info.json")]
-        folder = info_path.parent
-        media = None
-        thumb = None
-        subs = []
-        for p in folder.iterdir():
+        media, thumb, subs = [], None, []
+        for p in info_path.parent.iterdir():
             if not p.name.startswith(stem + "."):
                 continue
             rest = p.name[len(stem):]
-            if p.suffix in VIDEO_EXTS and rest.count(".") == 1:
-                media = p
-            elif p.suffix in THUMB_EXTS and rest.count(".") == 1:
+            if p.suffix.lower() in MEDIA_EXTS and rest.count(".") == 1:
+                media.append(p)
+            elif p.suffix.lower() in THUMB_EXTS and rest.count(".") == 1:
                 thumb = p
             elif p.suffix == ".vtt":
                 subs.append({"lang": rest[1:-4], "url": self._rel(p)})
-        if media is None:
-            return None
+        return sorted(media), thumb, subs
+
+    def _library_items(self, info_path: Path) -> list[dict]:
+        media_files, thumb, subs = self._siblings(info_path)
+        if not media_files:
+            return []
         try:
             info = json.loads(info_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             info = {}
+        return [self._item(info, info_path, media, thumb, subs) for media in media_files]
+
+    def _item(self, info, info_path, media, thumb, subs) -> dict:
         return {
-            "id": self._rel(info_path)[: -len(".info.json")],
+            "id": self._rel(media),
             "video_id": info.get("id"),
-            "title": info.get("title") or stem,
+            "title": info.get("title") or info_path.name[: -len(".info.json")],
             "channel": info.get("channel") or info.get("uploader"),
             "duration": info.get("duration"),
             "description": info.get("description") or "",
@@ -309,7 +429,10 @@ class DownloadManager:
             "playlist": (info.get("playlist_title") or info.get("playlist")) if info.get("playlist_index") else None,
             "playlist_index": info.get("playlist_index"),
             "media_url": self._rel(media),
-            "is_audio": media.suffix in (".m4a", ".mp3", ".opus", ".ogg"),
+            "path": str(media),
+            "folder": str(media.parent),
+            "format": media.suffix[1:].lower(),
+            "is_audio": media.suffix.lower() in AUDIO_EXTS,
             "thumbnail_url": self._rel(thumb) if thumb else None,
             "subtitles": subs,
             "size": media.stat().st_size,
@@ -327,25 +450,36 @@ class DownloadManager:
         return p
 
     def delete(self, item_id: str) -> bool:
-        base = self.resolve(item_id + ".info.json")
-        if base is None or not base.exists():
+        """Delete one downloaded file (item_id is its library-relative path)."""
+        media = self.resolve(item_id)
+        if media is None or not media.is_file() or media.suffix.lower() not in MEDIA_EXTS:
             return False
-        stem = base.name[: -len(".info.json")]
+        stem = media.name[: -len(media.suffix)]
+        info_path = media.with_name(stem + ".info.json")
         try:
-            info = json.loads(base.read_text(encoding="utf-8"))
+            info = json.loads(info_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             info = {}
+        media.unlink()
+        # Remove metadata, thumbnail and subtitles once no other format of this video is left.
+        if info_path.exists() and not self._siblings(info_path)[0]:
+            for p in media.parent.iterdir():
+                if p.name.startswith(stem + "."):
+                    p.unlink(missing_ok=True)
+        if media.parent != self.library_dir and not any(media.parent.iterdir()):
+            media.parent.rmdir()
+        # Forget it in the download archives so it can be downloaded again later.
         video_id = info.get("id")
-        extractor = (info.get("extractor_key") or "").lower()
-        for p in base.parent.iterdir():
-            if p.name.startswith(stem + "."):
-                p.unlink(missing_ok=True)
-        if base.parent != self.library_dir and not any(base.parent.iterdir()):
-            base.parent.rmdir()
-        # Forget it in the archive so it can be downloaded again later.
-        archive = self.library_dir / ".archive.txt"
-        if video_id and archive.exists():
+        entry = f"{(info.get('extractor_key') or '').lower()} {video_id}"
+        fmt = {"mpg": "mpeg"}.get(media.suffix[1:].lower(), media.suffix[1:].lower())
+        archives = [self.library_dir / f".archive-{fmt}.txt", self.library_dir / ".archive.txt"]
+        if fmt not in VIDEO_OUTPUTS + AUDIO_OUTPUTS:  # e.g. a fallback format saved without FFmpeg
+            archives = list(self.library_dir.glob(".archive*.txt"))
+        for archive in archives:
+            if not video_id or not archive.exists():
+                continue
             lines = archive.read_text(encoding="utf-8").splitlines()
-            keep = [ln for ln in lines if ln.strip() != f"{extractor} {video_id}"]
-            archive.write_text("\n".join(keep) + ("\n" if keep else ""), encoding="utf-8")
+            keep = [ln for ln in lines if ln.strip() != entry]
+            if len(keep) != len(lines):
+                archive.write_text("\n".join(keep) + ("\n" if keep else ""), encoding="utf-8")
         return True

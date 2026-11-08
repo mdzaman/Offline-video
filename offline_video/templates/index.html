@@ -14,18 +14,41 @@
   </header>
 
   <main>
+    <div id="ffmpeg-warning" class="card warn" hidden>
+      <strong>FFmpeg is not installed.</strong> Downloads still work, but only as single-file versions
+      (often 360p–720p MP4) and can't be converted to other formats. To fix, install it and reload this page:
+      <code>brew install ffmpeg</code> (Mac) · <code>winget install ffmpeg</code> (Windows) · <code>sudo apt install ffmpeg</code> (Linux)
+    </div>
+
     <form id="add-form" class="card">
       <textarea id="url" name="url" rows="2" placeholder="https://www.youtube.com/watch?v=…  or  https://www.youtube.com/playlist?list=…  (one per line for several)" required></textarea>
       <div class="row">
+        <label>Format
+          <select id="output" name="output">
+            <optgroup label="Video">
+              {% for f in video_outputs %}<option value="{{ f }}">{{ f | upper }}</option>{% endfor %}
+            </optgroup>
+            <optgroup label="Audio only">
+              {% for f in audio_outputs %}<option value="{{ f }}">{{ f | upper }}</option>{% endfor %}
+            </optgroup>
+          </select>
+        </label>
         <label>Quality
           <select id="quality" name="quality">
             {% for q in qualities %}
-              <option value="{{ q }}" {% if q == '720' %}selected{% endif %}>{{ 'Best available' if q == 'best' else ('Audio only' if q == 'audio' else q ~ 'p') }}</option>
+              <option value="{{ q }}" {% if q == '720' %}selected{% endif %}>{{ 'Best available' if q == 'best' else q ~ 'p' }}</option>
             {% endfor %}
           </select>
         </label>
         <label class="check"><input type="checkbox" id="subtitles" name="subtitles"> English subtitles</label>
         <button type="submit">Download</button>
+      </div>
+      <p id="format-note" class="muted small"></p>
+      <div class="location">
+        <span class="muted">Saving to:</span>
+        <code id="library-dir">…</code>
+        <button type="button" id="open-library" class="link">Open folder</button>
+        <button type="button" id="change-library" class="link">Change…</button>
       </div>
       <p id="form-error" class="error" hidden></p>
     </form>
@@ -57,6 +80,7 @@
     <div class="player-nav">
       <button id="prev" class="link">⟵ Previous</button>
       <label class="check"><input type="checkbox" id="autoplay" checked> Autoplay next</label>
+      <button id="player-open" class="link">Open file</button>
       <button id="next" class="link">Next ⟶</button>
     </div>
   </dialog>
