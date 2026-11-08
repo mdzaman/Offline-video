@@ -50,7 +50,8 @@ echo "$job"
 python3 -c 'import json,sys; j=json.loads(sys.argv[1]); assert j["status"]=="done" and j["files"][0].endswith(".mkv"), j' "$job"
 
 echo "== Page loads in the app"
-curl -sf "$API/" | grep -q 'is-android'
+page=$(curl -sf "$API/")  # read the whole page first: piping into grep -q can end curl early (exit 23)
+grep -q 'is-android' <<< "$page"
 
 echo "== Real YouTube video (informational: YouTube often blocks data-centre addresses)"
 download '{"url": "https://www.youtube.com/watch?v=jNQXAC9IVRw", "output": "mp4", "quality": "360"}' 120 || true
