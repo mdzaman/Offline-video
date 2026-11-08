@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg r
 def server(tmp_path_factory, monkeypatch_module):
     root = tmp_path_factory.mktemp("srv")
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x90",
-                    "-frames:v", "1", str(root / "thumb.webp")], check=True)
+                    "-frames:v", "1", str(root / "thumb.png")], check=True)
     for i in (1, 2):
         subprocess.run(
             ["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=160x120:rate=10",
@@ -43,10 +43,10 @@ def server(tmp_path_factory, monkeypatch_module):
 <item><title>Gone</title><guid>v3</guid><enclosure url="{base}/missing.mp4" type="video/mp4"/></item>
 </channel></rss>"""
     )
-    # A page with a WebP thumbnail, like YouTube, so thumbnail conversion (which needs FFmpeg) runs.
+    # A page with a non-JPEG thumbnail (YouTube uses WebP), so thumbnail conversion (which needs FFmpeg) runs.
     (root / "page.html").write_text(
         f"""<html><head><meta property="og:title" content="Page Video">
-<meta property="og:image" content="{base}/thumb.webp">
+<meta property="og:image" content="{base}/thumb.png">
 <meta property="og:video" content="{base}/clip1.mp4"><meta property="og:video:type" content="video/mp4">
 </head><body></body></html>"""
     )
@@ -172,7 +172,7 @@ def test_without_ffmpeg_saves_single_file_and_says_why(server, tmp_path, monkeyp
     assert job.files == ["Page Video [clip1].mp4"]
     assert "install FFmpeg" in job.error
     [item] = m.library()
-    assert item["thumbnail_url"] == "Page Video [clip1].webp"
+    assert item["thumbnail_url"] == "Page Video [clip1].png"
 
 
 def test_failed_item_is_not_reported_done(tmp_path):
