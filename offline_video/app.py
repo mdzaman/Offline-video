@@ -28,6 +28,8 @@ from .downloader import (
 from .phone import KEY_COOKIE, PhoneServer, new_key, print_qr, qr_svg
 
 SETTINGS_FILE = Path.home() / ".offline_video.json"
+# Set by the Android app, which runs this server on the phone and shows it in its own window.
+ON_ANDROID = os.environ.get("OFFLINE_VIDEO_ANDROID") == "1"
 
 
 def default_library_dir() -> Path:
@@ -113,7 +115,8 @@ def create_app(library_dir: str | None = None, workers: int = 1, settings_file: 
     def index():
         return render_template(
             "index.html", qualities=QUALITIES, video_outputs=VIDEO_OUTPUTS, audio_outputs=AUDIO_OUTPUTS,
-            remote=not is_local(),
+            remote=not is_local() or ON_ANDROID,
+            android=ON_ANDROID,
         )
 
     @app.get("/manifest.webmanifest")
@@ -146,8 +149,16 @@ def create_app(library_dir: str | None = None, workers: int = 1, settings_file: 
             library_dir=str(manager.library_dir),
             ffmpeg=ffmpeg_available(),
             version=__version__,
-            local=is_local(),
+            local=is_local() and not ON_ANDROID,
+            android=ON_ANDROID,
         )
+
+    @app.post("/api/shutdown")
+    def shutdown():
+        """Used by the Android app to replace a server left running by an older version."""
+        local_only()
+        threading.Timer(0.2, os._exit, args=(0,)).start()
+        return jsonify(ok=True)
 
     def phone_state(error: str | None = None):
         url = phone_url(f"http://{phone.ip}:{phone._server.server_port}") if phone.running else None

@@ -27,7 +27,7 @@ async function loadStatus() {
   const st = await (await fetch("/api/status")).json();
   hasFfmpeg = st.ffmpeg;
   document.body.classList.toggle("is-remote", !st.local);
-  $("#remote-note").hidden = st.local;
+  $("#remote-note").hidden = st.local || st.android;
   $("#library-dir").textContent = st.library_dir;
   $("#ffmpeg-warning").hidden = st.ffmpeg;
   updateFormatNote();
@@ -359,7 +359,10 @@ $("#library").addEventListener("click", async (e) => {
   const del = e.target.dataset.delete;
   if (del) {
     const item = library.find((i) => i.id === del);
-    if (!confirm(`Delete "${item?.title}" from ${isRemote() ? "the computer's library (copies saved on this phone are kept)" : "this computer"}?`)) return;
+    const where = document.body.classList.contains("is-android")
+      ? "the app (copies saved to your phone's Movies or Music folder are kept)"
+      : isRemote() ? "the computer's library (copies saved on this phone are kept)" : "this computer";
+    if (!confirm(`Delete "${item?.title}" from ${where}?`)) return;
     await fetch("/api/library/" + del.split("/").map(encodeURIComponent).join("/"), { method: "DELETE" });
     loadLibrary();
   }
@@ -423,6 +426,20 @@ $("#next").addEventListener("click", () => step(1));
 $("#player-close").addEventListener("click", () => dialog.close());
 $("#player-open").addEventListener("click", () => openPath(playlistQueue[playingIndex].media_url, false));
 dialog.addEventListener("close", () => { video.pause(); });
+
+// Links shared to the Android app (or opened as /?add=…) are put in the link box, ready to download.
+const shared = new URLSearchParams(location.search).get("add");
+if (shared) {
+  $("#url").value = shared;
+  history.replaceState(null, "", location.pathname);
+  $("#url").scrollIntoView({ block: "center" });
+}
+
+// Android back button: close the player first. Returns true if it handled the press.
+window.ovBack = () => {
+  if (dialog.open) { dialog.close(); return true; }
+  return false;
+};
 
 loadStatus();
 pollJobs();

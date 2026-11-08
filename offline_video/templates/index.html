@@ -15,14 +15,14 @@
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='icons/apple-touch-icon.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body{% if remote %} class="is-remote"{% endif %}>
+<body class="{% if remote %}is-remote{% endif %}{% if android %} is-android{% endif %}">
   <header>
     <h1>▶ Offline Video</h1>
     <p class="muted">Paste a YouTube video or playlist link, download it, watch it any time without internet.</p>
   </header>
 
   <main>
-    <div id="remote-note" class="card note"{% if not remote %} hidden{% endif %}>
+    <div id="remote-note" class="card note"{% if not remote or android %} hidden{% endif %}>
       📱 <strong>Connected to your computer.</strong> Downloads are saved on the computer. To watch without
       internet on this phone, tap <strong>Save to phone</strong> on a video in the Library.
       <span class="add-home">Tip: add this page to your home screen to open it like an app
