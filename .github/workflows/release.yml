@@ -1,11 +1,17 @@
 name: Release
 
-# Push a tag like v1.2.0 to build standalone apps for macOS, Windows and Linux and publish them
-# as a GitHub Release.
+# Builds standalone apps for macOS, Windows and Linux and publishes them as a GitHub Release, either
+# when a tag like v1.2.0 is pushed, or from the Actions tab (Release → Run workflow) with a tag name.
+# Run from the Actions tab with the tag left empty, it only builds the apps (as downloadable artifacts).
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version to publish, e.g. v1.2.0 (leave empty for a test build)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -55,7 +61,7 @@ jobs:
 
   publish:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v6
@@ -64,6 +70,9 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          name: Offline Video ${{ inputs.tag || github.ref_name }}
           files: out/*.zip
           generate_release_notes: true
           body: |

@@ -254,7 +254,7 @@ Releases are built automatically by GitHub Actions ([`.github/workflows/release.
    ```
 3. Open the repository's **Actions** tab and wait for the **Release** workflow (about 5 minutes). It builds the Mac, Windows and Linux apps and publishes them on the **Releases** page, with release notes.
 
-You can also run the workflow by hand (**Actions → Release → Run workflow**) to build the apps as downloadable artifacts without publishing a release.
+**Without Git (from the GitHub website):** after the version change is on `main`, go to **Actions → Release → Run workflow**, choose the `main` branch, type the version (e.g. `v1.1.0`) and click **Run workflow**. It creates the tag and the release for you. Leave the version empty to only build the apps as downloadable artifacts, without publishing a release.
 
 ## Putting your own copy on GitHub
 
