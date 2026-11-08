@@ -6,10 +6,16 @@ import argparse
 import ipaddress
 import json
 import os
+import socket
+import sys
+import threading
+import urllib.request
+import webbrowser
 from pathlib import Path
 
 from flask import Flask, abort, jsonify, render_template, request, send_file
 
+from . import __version__
 from .downloader import (
     AUDIO_OUTPUTS,
     QUALITIES,
@@ -21,6 +27,16 @@ from .downloader import (
 )
 
 SETTINGS_FILE = Path.home() / ".offline_video.json"
+
+
+def default_library_dir() -> Path:
+    """./downloads when run from a source checkout (run.sh / run.bat), otherwise a folder in the
+    user's Movies (Mac) or Videos folder."""
+    checkout = Path(__file__).resolve().parent.parent
+    if not getattr(sys, "frozen", False) and (checkout / "run.sh").exists():
+        return checkout / "downloads"
+    videos = Path.home() / ("Movies" if sys.platform == "darwin" else "Videos")
+    return videos / "Offline Video"
 
 
 def load_settings(settings_file: Path) -> dict:
@@ -42,7 +58,7 @@ def create_app(library_dir: str | None = None, workers: int = 1, settings_file: 
     app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # uploaded link lists
     settings_file = settings_file or SETTINGS_FILE
     settings = load_settings(settings_file)
-    library_dir = library_dir or os.environ.get("OFFLINE_VIDEO_DIR") or settings.get("library_dir") or "downloads"
+    library_dir = library_dir or os.environ.get("OFFLINE_VIDEO_DIR") or settings.get("library_dir") or default_library_dir()
     manager = DownloadManager(library_dir, workers=workers)
     app.config["manager"] = manager
 
@@ -63,7 +79,7 @@ def create_app(library_dir: str | None = None, workers: int = 1, settings_file: 
 
     @app.get("/api/status")
     def status():
-        return jsonify(library_dir=str(manager.library_dir), ffmpeg=ffmpeg_available())
+        return jsonify(library_dir=str(manager.library_dir), ffmpeg=ffmpeg_available(), version=__version__)
 
     @app.post("/api/settings")
     def update_settings():
@@ -161,21 +177,56 @@ def create_app(library_dir: str | None = None, workers: int = 1, settings_file: 
     return app
 
 
+def _already_running(host: str, port: int) -> bool:
+    """True if an Offline Video app is already answering on this port."""
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/api/status", timeout=2) as r:
+            return "library_dir" in json.loads(r.read())
+    except Exception:  # noqa: BLE001 - anything else on the port, or nothing at all
+        return False
+
+
+def _port_free(host: str, port: int) -> bool:
+    with socket.socket() as s:
+        try:
+            s.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Offline Video web app")
+    parser = argparse.ArgumentParser(prog="offline-video", description="Offline Video web app")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--dir", default=None, help="library folder (default: last used, else ./downloads)")
+    parser.add_argument("--dir", default=None, help="library folder (default: last used folder)")
     parser.add_argument("--workers", type=int, default=1, help="parallel downloads")
+    parser.add_argument("--no-browser", action="store_true", help="don't open the web browser on start")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args()
+
+    browse_host = "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host
+    if _already_running(browse_host, args.port):
+        print(f"Offline Video is already running: http://{browse_host}:{args.port}")
+        if not args.no_browser:
+            webbrowser.open(f"http://{browse_host}:{args.port}")
+        return
+    port = args.port
+    while not _port_free(args.host, port) and port < args.port + 20:
+        port += 1
+
     app = create_app(args.dir, args.workers)
     manager = app.config["manager"]
-    print(f"Offline Video running at http://{args.host}:{args.port}")
+    url = f"http://{browse_host}:{port}"
+    print(f"Offline Video {__version__} is running at {url}")
     print(f"Saving downloads to: {manager.library_dir}")
     if not ffmpeg_available():
         print("WARNING: FFmpeg not found. Downloads will be limited to single-file formats (often lower quality)")
         print("         and format conversion is off. Install it: brew install ffmpeg  (Mac)")
-    app.run(host=args.host, port=args.port, threaded=True)
+    print("Keep this window open while you use the app. Close it (or press Ctrl+C) to quit.")
+    if not args.no_browser:
+        threading.Timer(1.0, webbrowser.open, args=(url,)).start()
+    app.run(host=args.host, port=port, threaded=True)
 
 
 if __name__ == "__main__":
