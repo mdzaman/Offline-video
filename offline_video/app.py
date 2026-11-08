@@ -13,7 +13,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, render_template, request, send_file
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_file
 
 from . import __version__
 from .downloader import (
@@ -25,6 +25,7 @@ from .downloader import (
     ffmpeg_available,
     open_in_os,
 )
+from .phone import KEY_COOKIE, PhoneServer, new_key, print_qr, qr_svg
 
 SETTINGS_FILE = Path.home() / ".offline_video.json"
 
@@ -61,25 +62,125 @@ def create_app(library_dir: str | None = None, workers: int = 1, settings_file: 
     library_dir = library_dir or os.environ.get("OFFLINE_VIDEO_DIR") or settings.get("library_dir") or default_library_dir()
     manager = DownloadManager(library_dir, workers=workers)
     app.config["manager"] = manager
+    app.config.setdefault("PORT", 8000)
+    if not settings.get("access_key"):
+        settings["access_key"] = new_key()
+        save_settings(settings_file, settings)
+    phone = PhoneServer(app, app.config["PORT"])
+    app.config["phone"] = phone
+    app.config["settings"] = settings
+
+    def is_local() -> bool:
+        try:
+            return ipaddress.ip_address(request.remote_addr or "").is_loopback
+        except ValueError:
+            return False
 
     def local_only():
-        # Opening files and changing folders act on the computer running the app, so only allow it
-        # from a browser on that same computer.
-        try:
-            if not ipaddress.ip_address(request.remote_addr or "").is_loopback:
-                abort(403)
-        except ValueError:
+        # Opening files, changing folders and phone settings act on the computer running the app, so
+        # only allow them from a browser on that same computer.
+        if not is_local():
             abort(403)
+
+    def phone_url(base: str) -> str:
+        return f"{base}/?key={settings['access_key']}"
+
+    @app.before_request
+    def require_key_for_other_devices():
+        """Phones (anything not on this computer) need the secret key from the QR code. It arrives as
+        ?key=… once and is then remembered in a cookie."""
+        if is_local() or request.path in ("/manifest.webmanifest",) or request.path.startswith("/static/icons/"):
+            return None
+        key = settings["access_key"]
+        if request.args.get("key") == key:
+            if request.path == "/" or request.method != "GET":
+                return None  # the home page keeps ?key= so "Add to Home Screen" bookmarks it
+            resp = redirect(request.path)
+        elif request.cookies.get(KEY_COOKIE) == key:
+            return None
+        else:
+            return render_template("locked.html"), 401
+        resp.set_cookie(KEY_COOKIE, key, max_age=400 * 24 * 3600, httponly=True, samesite="Lax")
+        return resp
+
+    @app.after_request
+    def remember_key(resp):
+        if not is_local() and request.args.get("key") == settings["access_key"] and resp.status_code < 400:
+            resp.set_cookie(KEY_COOKIE, settings["access_key"], max_age=400 * 24 * 3600, httponly=True, samesite="Lax")
+        return resp
 
     @app.get("/")
     def index():
         return render_template(
-            "index.html", qualities=QUALITIES, video_outputs=VIDEO_OUTPUTS, audio_outputs=AUDIO_OUTPUTS
+            "index.html", qualities=QUALITIES, video_outputs=VIDEO_OUTPUTS, audio_outputs=AUDIO_OUTPUTS,
+            remote=not is_local(),
         )
+
+    @app.get("/manifest.webmanifest")
+    def manifest():
+        # Lets phones "Add to Home Screen" as an app. The start page carries the key when the request
+        # comes from an already-connected phone, because home-screen apps keep their own cookies.
+        start = "/"
+        if not is_local() and request.cookies.get(KEY_COOKIE) == settings["access_key"]:
+            start = f"/?key={settings['access_key']}"
+        data = {
+            "name": "Offline Video",
+            "short_name": "Offline Video",
+            "description": "Download YouTube videos and playlists and watch them offline.",
+            "start_url": start,
+            "scope": "/",
+            "display": "standalone",
+            "background_color": "#111114",
+            "theme_color": "#e5322d",
+            "icons": [
+                {"src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                {"src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
+                {"src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+            ],
+        }
+        return app.response_class(json.dumps(data), mimetype="application/manifest+json")
 
     @app.get("/api/status")
     def status():
-        return jsonify(library_dir=str(manager.library_dir), ffmpeg=ffmpeg_available(), version=__version__)
+        return jsonify(
+            library_dir=str(manager.library_dir),
+            ffmpeg=ffmpeg_available(),
+            version=__version__,
+            local=is_local(),
+        )
+
+    def phone_state(error: str | None = None):
+        url = phone_url(f"http://{phone.ip}:{phone._server.server_port}") if phone.running else None
+        return jsonify(enabled=phone.running, url=url, qr=qr_svg(url) if url else None, error=error)
+
+    @app.get("/api/phone")
+    def get_phone():
+        local_only()
+        return phone_state()
+
+    @app.post("/api/phone")
+    def set_phone():
+        local_only()
+        enable = bool((request.get_json(silent=True) or {}).get("enabled"))
+        error = None
+        if enable:
+            try:
+                phone.start()
+            except OSError as e:
+                error = f"Couldn't turn on phone access: {e}"
+        else:
+            phone.stop()
+        settings["phone_access"] = phone.running
+        save_settings(settings_file, settings)
+        return phone_state(error)
+
+    @app.post("/api/phone/new-key")
+    def new_phone_key():
+        """Make a new secret link; phones using the old one are disconnected."""
+        local_only()
+        settings["access_key"] = new_key()
+        save_settings(settings_file, settings)
+        return phone_state()
 
     @app.post("/api/settings")
     def update_settings():
@@ -171,7 +272,10 @@ def create_app(library_dir: str | None = None, workers: int = 1, settings_file: 
         path = manager.resolve(rel)
         if path is None or not path.is_file():
             abort(404)
-        # conditional=True enables HTTP range requests so the player can seek.
+        # conditional=True enables HTTP range requests so the player can seek. ?download=1 saves the file
+        # (e.g. to a phone) under a readable name instead of playing it.
+        if request.args.get("download"):
+            return send_file(path, conditional=True, as_attachment=True, download_name=path.name)
         return send_file(path, conditional=True)
 
     return app
@@ -202,6 +306,7 @@ def main():
     parser.add_argument("--dir", default=None, help="library folder (default: last used folder)")
     parser.add_argument("--workers", type=int, default=1, help="parallel downloads")
     parser.add_argument("--no-browser", action="store_true", help="don't open the web browser on start")
+    parser.add_argument("--phone", action="store_true", help="let phones on the same Wi-Fi use the app")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args()
 
@@ -216,6 +321,7 @@ def main():
         port += 1
 
     app = create_app(args.dir, args.workers)
+    app.config["PORT"] = app.config["phone"].port = port
     manager = app.config["manager"]
     url = f"http://{browse_host}:{port}"
     print(f"Offline Video {__version__} is running at {url}")
@@ -223,6 +329,15 @@ def main():
     if not ffmpeg_available():
         print("WARNING: FFmpeg not found. Downloads will be limited to single-file formats (often lower quality)")
         print("         and format conversion is off. Install it: brew install ffmpeg  (Mac)")
+    settings = app.config["settings"]
+    if args.phone or settings.get("phone_access"):
+        try:
+            phone_base = app.config["phone"].start()
+            phone_link = f"{phone_base}/?key={settings['access_key']}"
+            print(f"\nPhones on the same Wi-Fi: scan this code or open {phone_link}")
+            print_qr(phone_link)
+        except OSError as e:
+            print(f"Phone access is on but couldn't start: {e}")
     print("Keep this window open while you use the app. Close it (or press Ctrl+C) to quit.")
     if not args.no_browser:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()

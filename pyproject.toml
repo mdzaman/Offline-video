@@ -9,7 +9,7 @@ description = "Download YouTube videos and playlists and watch them offline, fro
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-dependencies = ["flask>=3.0", "yt-dlp[default]>=2025.11.12"]
+dependencies = ["flask>=3.0", "segno>=1.6", "yt-dlp[default]>=2025.11.12"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
@@ -25,7 +25,7 @@ Issues = "https://github.com/mdzaman/Offline-video/issues"
 packages = ["offline_video"]
 
 [tool.setuptools.package-data]
-offline_video = ["templates/*.html", "static/*"]
+offline_video = ["templates/*.html", "static/*", "static/icons/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "offline_video.__version__" }
