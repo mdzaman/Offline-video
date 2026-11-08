@@ -79,53 +79,117 @@ document.addEventListener("click", (e) => {
 });
 
 // ---- adding downloads --------------------------------------------------
+function formOptions() {
+  return { quality: $("#quality").value, output: $("#output").value, subtitles: $("#subtitles").checked };
+}
+
+function showResult(ok, message) {
+  $("#form-error").hidden = ok;
+  $("#form-ok").hidden = !ok;
+  $(ok ? "#form-ok" : "#form-error").textContent = message;
+}
+
+async function handleQueued(res) {
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    showResult(false, data.error || (res.status === 413 ? "That file is too large (max 5 MB)." : "Could not add download"));
+    return false;
+  }
+  showResult(true, data.queued === 1 ? "Added to the download queue." : `Queued ${data.queued} downloads.`);
+  pollJobs();
+  return true;
+}
+
 $("#add-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const err = $("#form-error");
-  err.hidden = true;
   const res = await fetch("/api/downloads", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: $("#url").value, quality: $("#quality").value, output: $("#output").value, subtitles: $("#subtitles").checked }),
+    body: JSON.stringify({ url: $("#url").value, ...formOptions() }),
   });
-  if (!res.ok) {
-    err.textContent = (await res.json().catch(() => ({}))).error || "Could not add download";
-    err.hidden = false;
-    return;
-  }
-  $("#url").value = "";
-  loadStatus();
-pollJobs();
+  if (await handleQueued(res)) $("#url").value = "";
+});
+
+async function uploadList(file) {
+  if (!file) return;
+  const body = new FormData();
+  body.append("file", file);
+  for (const [k, v] of Object.entries(formOptions())) body.append(k, v);
+  await handleQueued(await fetch("/api/downloads/file", { method: "POST", body }));
+}
+
+$("#upload-btn").addEventListener("click", () => $("#upload-file").click());
+$("#upload-file").addEventListener("change", async (e) => {
+  await uploadList(e.target.files[0]);
+  e.target.value = "";
+});
+const urlBox = $("#url");
+urlBox.addEventListener("dragover", (e) => { e.preventDefault(); urlBox.classList.add("dragover"); });
+urlBox.addEventListener("dragleave", () => urlBox.classList.remove("dragover"));
+urlBox.addEventListener("drop", (e) => {
+  urlBox.classList.remove("dragover");
+  if (!e.dataTransfer.files.length) return; // dropped text/links go into the box as usual
+  e.preventDefault();
+  uploadList(e.dataTransfer.files[0]);
 });
 
 $("#clear-jobs").addEventListener("click", async () => {
   await fetch("/api/jobs/clear", { method: "POST" });
-  loadStatus();
-pollJobs();
+  pollJobs();
+});
+$("#cancel-all").addEventListener("click", async () => {
+  if (!confirm("Cancel all queued and running downloads?")) return;
+  await fetch("/api/jobs/cancel-all", { method: "POST" });
+  pollJobs();
 });
 
 // ---- job list ----------------------------------------------------------
 let lastDoneCount = -1;
 let pollTimer = null;
+const openLists = new Set(); // playlist video lists the user has expanded
+
+const ITEM_ICON = { pending: "·", downloading: "⬇", done: "✓", skipped: "↺", failed: "✕", cancelled: "–" };
+
+function renderItems(j) {
+  if (!j.items.length) return "";
+  const counts = {};
+  for (const it of j.items) counts[it.status] = (counts[it.status] || 0) + 1;
+  const summary = [
+    counts.done && `${counts.done} downloaded`,
+    counts.skipped && `${counts.skipped} already in library`,
+    counts.failed && `${counts.failed} failed`,
+    counts.pending && `${counts.pending} waiting`,
+  ].filter(Boolean).join(", ");
+  const rows = j.items.map((it) => `<li class="${esc(it.status)}" title="${esc(it.status)}">
+      <span class="n">${it.index}.</span><span>${ITEM_ICON[it.status] || ""}</span><span class="it">${esc(it.title)}</span>
+      ${it.error ? `<span class="ie">${esc(it.error)}</span>` : ""}</li>`).join("");
+  return `<details data-job="${esc(j.id)}" ${openLists.has(j.id) ? "open" : ""}>
+    <summary>Videos in this playlist (${j.items.length})${summary ? " — " + esc(summary) : ""}</summary>
+    <ol>${rows}</ol></details>`;
+}
 
 function renderJob(j) {
   const active = j.status === "downloading" || j.status === "processing";
   let overall = j.status === "done" ? 100 : j.percent;
   if (j.is_playlist && j.total_items) {
-    overall = j.status === "done" ? 100 : ((j.completed_items + (active ? j.percent / 100 : 0)) / j.total_items) * 100;
+    const finished = j.items.length ? j.items.filter((i) => !["pending", "downloading"].includes(i.status)).length : j.completed_items;
+    overall = j.status === "done" ? 100 : ((finished + (active ? j.percent / 100 : 0)) / j.total_items) * 100;
   }
   const parts = [];
+  if (j.status === "queued") parts.push("Waiting in queue");
   if (j.is_playlist) parts.push(`${j.completed_items}/${j.total_items} videos`);
   if (active && j.current_item && j.is_playlist) parts.push("Now: " + j.current_item);
   if (j.status === "downloading" && j.percent) parts.push(j.percent.toFixed(0) + "%");
   if (j.speed) parts.push(fmtBytes(j.speed) + "/s");
   if (j.eta) parts.push("ETA " + fmtDuration(j.eta));
-  if (j.status === "processing") parts.push("Merging audio and video…");
+  if (j.status === "processing") parts.push("Converting…");
+  parts.push(j.output.toUpperCase());
   const canCancel = j.status === "queued" || active;
   return `<div class="card job ${esc(j.status)}">
     <div>
       <div class="title">${esc(j.title || j.url)}</div>
-      <div class="sub">${esc(parts.join(" · ") || j.url)}</div>
+      <div class="sub">${esc(j.url)}</div>
+      <div class="sub">${esc(parts.join(" · "))}</div>
       ${j.error ? `<div class="sub msg">${esc(j.error)}</div>` : ""}
       ${jobLinks(j)}
     </div>
@@ -133,6 +197,7 @@ function renderJob(j) {
       <span class="badge">${esc(j.status)}</span>
       ${canCancel ? `<button class="link" data-cancel="${esc(j.id)}">Cancel</button>` : ""}
     </div>
+    ${renderItems(j)}
     <div class="bar"><div style="width:${Math.min(100, overall).toFixed(1)}%"></div></div>
   </div>`;
 }
@@ -151,7 +216,13 @@ async function pollJobs() {
   clearTimeout(pollTimer);
   try {
     const { jobs } = await (await fetch("/api/jobs")).json();
-    $("#jobs").innerHTML = jobs.length ? jobs.map(renderJob).join("") : '<p class="muted">Nothing queued.</p>';
+    const list = $("#jobs");
+    const scroll = [...list.querySelectorAll("details ol")].map((ol) => [ol.closest("details").dataset.job, ol.scrollTop]);
+    list.innerHTML = jobs.length ? jobs.map(renderJob).join("") : '<p class="muted">Nothing queued.</p>';
+    for (const [id, top] of scroll) {
+      const ol = list.querySelector(`details[data-job="${id}"] ol`);
+      if (ol) ol.scrollTop = top;
+    }
     // Refresh the library whenever another video finishes.
     const doneCount = jobs.reduce((n, j) => n + j.completed_items + (j.status === "done" ? 1 : 0), 0);
     if (doneCount !== lastDoneCount) { lastDoneCount = doneCount; loadLibrary(); }
@@ -162,12 +233,17 @@ async function pollJobs() {
   }
 }
 
+$("#jobs").addEventListener("toggle", (e) => {
+  const id = e.target.dataset?.job;
+  if (!id) return;
+  if (e.target.open) openLists.add(id); else openLists.delete(id);
+}, true);
+
 $("#jobs").addEventListener("click", async (e) => {
   const id = e.target.dataset.cancel;
   if (!id) return;
   await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
-  loadStatus();
-pollJobs();
+  pollJobs();
 });
 
 // ---- library -----------------------------------------------------------

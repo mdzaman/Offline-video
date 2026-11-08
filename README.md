@@ -2,7 +2,10 @@
 
 A small self-hosted web app for downloading YouTube videos **or whole playlists** and watching them later without an internet connection.
 
-- Paste a single video URL, a playlist URL, or several URLs (one per line)
+- Paste a single video link, a playlist link (every video in it is downloaded), or many links at once: one per line, comma separated, or mixed in with other text. Duplicates are ignored
+- Or upload a `.txt` file of links (button, or drag the file onto the link box): every link in it is queued
+- Playlists show a list of all their videos with each one's status (waiting, downloading, done, already in library, failed and why)
+- Downloads run one after another in a queue; cancel one or **Cancel all**
 - Choose the output format, video (**MP4, MKV, WebM, MOV, AVI, MPEG**) or audio only (**MP3, M4A, WAV, FLAC, Opus, OGG**), plus quality (best / 1080p / 720p / 480p / 360p) and optional English subtitles. You can keep the same video in several formats
 - See exactly where files are saved, change the folder from the page, and use **Open file** / **Show in folder** (Finder, Explorer) for any download
 - Live progress for every download, with per-video counts for playlists; cancel at any time

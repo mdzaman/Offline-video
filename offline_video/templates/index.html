@@ -21,7 +21,12 @@
     </div>
 
     <form id="add-form" class="card">
-      <textarea id="url" name="url" rows="2" placeholder="https://www.youtube.com/watch?v=…  or  https://www.youtube.com/playlist?list=…  (one per line for several)" required></textarea>
+      <textarea id="url" name="url" rows="3" placeholder="Paste a video or playlist link, or many links (one per line)&#10;https://www.youtube.com/watch?v=…&#10;https://www.youtube.com/playlist?list=…"></textarea>
+      <div class="upload-row">
+        <button type="button" id="upload-btn" class="secondary">📄 Upload a .txt list of links</button>
+        <input type="file" id="upload-file" accept=".txt,.csv,.list,text/plain,text/csv" hidden>
+        <span class="muted small-inline">or drop a text file on the box above. Playlist links download every video in the playlist.</span>
+      </div>
       <div class="row">
         <label>Format
           <select id="output" name="output">
@@ -51,12 +56,16 @@
         <button type="button" id="change-library" class="link">Change…</button>
       </div>
       <p id="form-error" class="error" hidden></p>
+      <p id="form-ok" class="ok" hidden></p>
     </form>
 
     <section>
       <div class="section-head">
         <h2>Downloads</h2>
-        <button id="clear-jobs" class="link">Clear finished</button>
+        <div>
+          <button id="cancel-all" class="link">Cancel all</button>
+          <button id="clear-jobs" class="link">Clear finished</button>
+        </div>
       </div>
       <div id="jobs"><p class="muted">Nothing queued.</p></div>
     </section>

@@ -82,3 +82,20 @@ code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: va
 .tile .fmt { font-size: 10px; font-weight: 700; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; margin-left: 4px; vertical-align: 1px; }
 .tile .actions { flex-wrap: wrap; gap: 2px 8px; justify-content: flex-start; }
 .tile .actions .del { margin-left: auto; }
+
+.ok { color: var(--ok); margin: 8px 0 0; }
+.upload-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; }
+.small-inline { font-size: 13px; }
+button.secondary { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 14px; }
+button.secondary:hover { border-color: var(--muted); }
+textarea.dragover { border-color: var(--accent); outline: 2px dashed var(--accent); }
+.job details { grid-column: 1 / -1; font-size: 13px; }
+.job summary { cursor: pointer; color: var(--muted); }
+.job ol { margin: 6px 0 0; padding: 0; list-style: none; max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+.job li { display: grid; grid-template-columns: 2.5em 1.5em 1fr; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.job li:last-child { border-bottom: 0; }
+.job li .n { color: var(--muted); text-align: right; }
+.job li .it { overflow-wrap: anywhere; }
+.job li .ie { grid-column: 3; color: var(--err); font-size: 12px; }
+.job li.downloading { background: var(--bar); font-weight: 600; }
+.job li.failed .it, .job li.cancelled .it { color: var(--muted); }

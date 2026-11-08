@@ -6,6 +6,7 @@ as a playlist, which exercises the same code paths as YouTube videos and playlis
 
 import functools
 import http.server
+import io
 import shutil
 import subprocess
 import threading
@@ -215,3 +216,61 @@ def test_open_and_change_folder(server, tmp_path, monkeypatch):
     # The choice is remembered for next time.
     app2 = create_app(settings_file=settings)
     assert app2.config["manager"].library_dir == new_dir.resolve()
+
+
+def test_extract_urls_from_messy_text():
+    text = """# my list
+https://www.youtube.com/watch?v=aaa
+https://youtu.be/bbb?si=x, https://www.youtube.com/playlist?list=PL1
+  not a link
+see (https://www.youtube.com/watch?v=ccc).
+https://www.youtube.com/watch?v=aaa
+"""
+    assert downloader.extract_urls(text) == [
+        "https://www.youtube.com/watch?v=aaa",
+        "https://youtu.be/bbb?si=x",
+        "https://www.youtube.com/playlist?list=PL1",
+        "https://www.youtube.com/watch?v=ccc",
+    ]
+
+
+def test_playlist_lists_every_video_with_its_status(server, tmp_path):
+    m = DownloadManager(tmp_path)
+    job = wait(m.submit(f"{server}/feed.xml", "360"))
+    assert [(i["index"], i["title"], i["status"]) for i in job.items] == [
+        (1, "One", "done"), (2, "Two", "done"), (3, "Gone", "failed")]
+    assert "404" in job.items[2]["error"]
+
+    again = wait(m.submit(f"{server}/feed.xml", "360"))
+    assert [i["status"] for i in again.items] == ["skipped", "skipped", "failed"]
+
+
+def test_upload_text_file_and_paste_many(server, tmp_path):
+    app = create_app(str(tmp_path), settings_file=tmp_path / "settings.json")
+    c = app.test_client()
+    listing = f"My downloads:\n{server}/clip1.mp4\n\n{server}/clip2.mp4, {server}/clip1.mp4\n"
+    r = c.post("/api/downloads/file", data={"file": (io.BytesIO(listing.encode()), "links.txt"), "output": "m4a"},
+               content_type="multipart/form-data")
+    assert r.status_code == 201 and r.json["queued"] == 2
+    assert [j["output"] for j in r.json["jobs"]] == ["m4a", "m4a"]
+    for j in r.json["jobs"]:
+        wait(app.config["manager"].jobs[j["id"]])
+    assert sorted(i["media_url"] for i in c.get("/api/library").json["items"]) == ["clip1 [clip1].m4a", "clip2 [clip2].m4a"]
+
+    r = c.post("/api/downloads", json={"url": f"{server}/clip1.mp4 {server}/clip2.mp4"})
+    assert r.json["queued"] == 2
+    empty = c.post("/api/downloads/file", data={"file": (io.BytesIO(b"no links here"), "x.txt")},
+                   content_type="multipart/form-data")
+    assert empty.status_code == 400 and "No links" in empty.json["error"]
+    assert c.post("/api/downloads/file", data={}, content_type="multipart/form-data").status_code == 400
+
+
+def test_cancel_all(tmp_path, monkeypatch):
+    m = DownloadManager(tmp_path)
+    gate = threading.Event()
+    monkeypatch.setattr(m, "_run", lambda job: gate.wait(5))  # keep the worker busy with the first job
+    jobs = [m.submit(f"https://example.com/{i}") for i in range(3)]
+    time.sleep(0.2)
+    assert m.cancel_all() == 3
+    assert [j.status for j in jobs[1:]] == ["cancelled", "cancelled"]
+    gate.set()

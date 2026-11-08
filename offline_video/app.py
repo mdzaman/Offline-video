@@ -10,7 +10,15 @@ from pathlib import Path
 
 from flask import Flask, abort, jsonify, render_template, request, send_file
 
-from .downloader import AUDIO_OUTPUTS, QUALITIES, VIDEO_OUTPUTS, DownloadManager, ffmpeg_available, open_in_os
+from .downloader import (
+    AUDIO_OUTPUTS,
+    QUALITIES,
+    VIDEO_OUTPUTS,
+    DownloadManager,
+    extract_urls,
+    ffmpeg_available,
+    open_in_os,
+)
 
 SETTINGS_FILE = Path.home() / ".offline_video.json"
 
@@ -31,6 +39,7 @@ def save_settings(settings_file: Path, settings: dict) -> None:
 
 def create_app(library_dir: str | None = None, workers: int = 1, settings_file: Path | None = None) -> Flask:
     app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # uploaded link lists
     settings_file = settings_file or SETTINGS_FILE
     settings = load_settings(settings_file)
     library_dir = library_dir or os.environ.get("OFFLINE_VIDEO_DIR") or settings.get("library_dir") or "downloads"
@@ -84,12 +93,10 @@ def create_app(library_dir: str | None = None, workers: int = 1, settings_file: 
             return jsonify(error=f"Couldn't open it: {e}"), 500
         return jsonify(ok=True)
 
-    @app.post("/api/downloads")
-    def add_download():
-        data = request.get_json(silent=True) or request.form
-        urls = [u for u in (data.get("url") or "").split() if u]
+    def queue_urls(text, data):
+        urls = extract_urls(text)
         if not urls:
-            return jsonify(error="Enter a video or playlist URL"), 400
+            return jsonify(error="No links found. Paste YouTube video or playlist links (http:// or https://)."), 400
         quality = data.get("quality") or "720"
         output = data.get("output") or "mp4"
         subtitles = str(data.get("subtitles", "")).lower() in ("1", "true", "on", "yes")
@@ -97,7 +104,22 @@ def create_app(library_dir: str | None = None, workers: int = 1, settings_file: 
             jobs = [manager.submit(u, quality, subtitles, output) for u in urls]
         except ValueError as e:
             return jsonify(error=str(e)), 400
-        return jsonify(jobs=[j.to_dict() for j in jobs]), 201
+        return jsonify(jobs=[j.to_dict() for j in jobs], queued=len(jobs)), 201
+
+    @app.post("/api/downloads")
+    def add_download():
+        # Accepts one or many links: one per line, comma/space separated, or mixed with other text.
+        data = request.get_json(silent=True) or request.form
+        return queue_urls(data.get("url") or "", data)
+
+    @app.post("/api/downloads/file")
+    def add_download_file():
+        """Queue every link in an uploaded text file (.txt, .csv, …)."""
+        f = request.files.get("file")
+        if f is None:
+            return jsonify(error="Choose a text file with links"), 400
+        text = f.read().decode("utf-8-sig", errors="replace")
+        return queue_urls(text, request.form)
 
     @app.get("/api/jobs")
     def jobs():
@@ -108,6 +130,10 @@ def create_app(library_dir: str | None = None, workers: int = 1, settings_file: 
         if not manager.cancel(job_id):
             abort(404)
         return jsonify(ok=True)
+
+    @app.post("/api/jobs/cancel-all")
+    def cancel_all():
+        return jsonify(cancelled=manager.cancel_all())
 
     @app.post("/api/jobs/clear")
     def clear():

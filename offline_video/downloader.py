@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import queue
@@ -26,6 +27,22 @@ AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".opus", ".ogg"}
 MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpg", ".mpeg", ".flv"} | AUDIO_EXTS
 THUMB_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+URL_RE = re.compile(r"https?://[^\s,;\"'<>()\[\]]+")
+ERROR_ID_RE = re.compile(r"^\[[^\]]+\] ([^\s:]+): ")  # "[youtube] dQw4w9WgXcQ: Video unavailable"
+FILE_ID_RE = re.compile(r"\[([^\]]+)\]\.[^.]+$")  # "... [dQw4w9WgXcQ].mp4"
+MAX_PLAYLIST_LISTING = 5000
+
+
+def extract_urls(text: str) -> list[str]:
+    """All http(s) links in a block of text (one per line, comma separated, or mixed with other text),
+    without duplicates, in order."""
+    seen, urls = set(), []
+    for u in URL_RE.findall(text or ""):
+        u = u.rstrip(".")
+        if u not in seen:
+            seen.add(u)
+            urls.append(u)
+    return urls
 
 FFMPEG_HINT = (
     "FFmpeg is not installed. Install it (Mac: brew install ffmpeg, Windows: winget install ffmpeg, "
@@ -94,6 +111,9 @@ class Job:
     eta: int | None = None
     error: str | None = None
     files: list[str] = field(default_factory=list)  # library-relative paths of finished files
+    # For playlists: one entry per video, {"index", "id", "title", "status", "error"} where status is
+    # pending | downloading | done | skipped (already in library) | failed | cancelled.
+    items: list[dict] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     cancel_requested: bool = False
@@ -183,13 +203,19 @@ def build_ydl_opts(job: Job, out_dir: Path, hook, pp_hook, post_hook, logger=Non
 class _Logger:
     """Collects yt-dlp errors (and archive skips) so a job can report what happened."""
 
-    def __init__(self):
+    def __init__(self, on_error=None, on_skip=None):
         self.errors: list[str] = []
         self.skipped = 0
+        self.on_error = on_error
+        self.on_skip = on_skip
 
     def debug(self, msg):
-        if "has already been recorded in the archive" in str(msg):
+        msg = str(msg)
+        if "has already been recorded in the archive" in msg:
             self.skipped += 1
+            if self.on_skip:
+                title = msg.removeprefix("[download] ").split(" has already been recorded")[0]
+                self.on_skip(title)
 
     info = debug
 
@@ -201,6 +227,9 @@ class _Logger:
         if "ffmpeg not found" in msg.lower() or "ffprobe not found" in msg.lower():
             msg = FFMPEG_HINT
         self.errors.append(msg)
+        if self.on_error:
+            m = ERROR_ID_RE.match(msg)
+            self.on_error(m.group(1) if m else None, msg)
 
 
 def open_in_os(path: Path, reveal: bool = False) -> None:
@@ -266,6 +295,11 @@ class DownloadManager:
                 job.finished_at = time.time()
             return True
 
+    def cancel_all(self) -> int:
+        with self._lock:
+            active = [j.id for j in self.jobs.values() if j.status not in ("done", "error", "cancelled")]
+        return sum(self.cancel(jid) for jid in active)
+
     def clear_finished(self) -> None:
         with self._lock:
             for jid in [j.id for j in self.jobs.values() if j.status in ("done", "error", "cancelled")]:
@@ -287,10 +321,42 @@ class DownloadManager:
             if job.cancel_requested:
                 raise Cancelled()
 
+        by_id: dict[str, dict] = {}
+
+        def set_item(video_id, status, error=None):
+            item = by_id.get(video_id)
+            if item and item["status"] not in ("done", "failed", "skipped"):
+                item["status"] = status
+                if error:
+                    item["error"] = error
+
+        def first_unfinished(title=None):
+            # Playlist videos are processed in order, so an event that doesn't name its video belongs
+            # to the earliest one not yet finished.
+            open_items = [i for i in job.items if i["status"] in ("pending", "downloading")]
+            named = [i for i in open_items if title and i["title"] == title]
+            return (named or open_items or [None])[0]
+
+        def on_skip(title):
+            item = first_unfinished(title)
+            if item:
+                item["status"] = "skipped"
+
+        def on_error(video_id, msg):
+            item = by_id.get(video_id) or first_unfinished()
+            if item and item["status"] in ("pending", "downloading"):
+                item["status"] = "failed"
+                item["error"] = msg
+
         def hook(d):
             check_cancel()
             info = d.get("info_dict") or {}
             job.current_item = info.get("title") or job.current_item
+            idx = info.get("playlist_index")
+            if info.get("id") not in by_id and idx and 0 < idx <= len(job.items):
+                by_id[info["id"]] = job.items[idx - 1]  # listing had no id (non-YouTube sites)
+            if info.get("id") in by_id:
+                set_item(info["id"], "downloading")
             if info.get("playlist_index"):
                 job.current_index = info["playlist_index"]
                 job.is_playlist = True
@@ -325,10 +391,13 @@ class DownloadManager:
                         os.replace(f, dest_dir / f.name)
                 job.completed_items += 1
                 job.files.append((dest_dir / p.name).relative_to(out_dir).as_posix())
+                m = FILE_ID_RE.search(p.name)
+                if m:
+                    set_item(m.group(1), "done")
             job.status = "downloading"
             job.percent = 0.0
 
-        logger = _Logger()
+        logger = _Logger(on_error=on_error, on_skip=on_skip)
         has_ffmpeg = ffmpeg_available()
         work_dir = (out_dir / ".tmp" / job.id).resolve()
         try:
@@ -347,11 +416,22 @@ class DownloadManager:
             job.title = info.get("title") or job.title
             if info.get("_type") in ("playlist", "multi_video"):
                 job.is_playlist = True
-                entries = info.get("entries")
-                if isinstance(entries, list):
-                    job.total_items = len(entries)
-                elif info.get("playlist_count"):
-                    job.total_items = info["playlist_count"]
+                # List the playlist's videos up front so each one's progress can be shown.
+                entries = info.get("entries") or []
+                try:
+                    for n, e in enumerate(itertools.islice(entries, MAX_PLAYLIST_LISTING), 1):
+                        check_cancel()
+                        e = e or {}
+                        item = {"index": n, "id": e.get("id"), "title": e.get("title") or e.get("url") or f"Video {n}",
+                                "status": "pending", "error": None}
+                        job.items.append(item)
+                        if item["id"]:
+                            by_id[item["id"]] = item
+                except Cancelled:
+                    raise
+                except Exception:  # noqa: BLE001 - the listing is a nicety; the download itself still runs
+                    pass
+                job.total_items = len(job.items) or info.get("playlist_count") or job.total_items
             check_cancel()
             opts = build_ydl_opts(job, out_dir, hook, pp_hook, post_hook, logger, has_ffmpeg, work_dir)
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -376,6 +456,10 @@ class DownloadManager:
             job.status = "error"
             job.error = ANSI_RE.sub("", str(e)).removeprefix("ERROR: ")
         finally:
+            leftover = "cancelled" if job.status == "cancelled" else "failed"
+            for item in job.items:
+                if item["status"] in ("pending", "downloading"):
+                    item["status"] = leftover
             shutil.rmtree(work_dir, ignore_errors=True)
             job.finished_at = time.time()
             job.speed = job.eta = None
