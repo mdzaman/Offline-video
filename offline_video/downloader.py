@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import yt_dlp
+from yt_dlp.postprocessor.common import PostProcessor
 from yt_dlp.postprocessor.ffmpeg import FFmpegPostProcessor
 
 VIDEO_OUTPUTS = ["mp4", "mkv", "webm", "mov", "avi", "mpeg"]
@@ -120,6 +121,22 @@ class ReencodePP(FFmpegPostProcessor):
         return [path], info
 
 
+class RenameExtPP(PostProcessor):
+    """Gives the finished file a different extension (e.g. an Ogg Opus file saved as .ogg)."""
+
+    def __init__(self, downloader, ext: str):
+        super().__init__(downloader)
+        self.ext = ext
+
+    def run(self, info):
+        path = Path(info["filepath"])
+        out = path.with_suffix("." + self.ext)
+        os.replace(path, out)
+        info["filepath"] = str(out)
+        info["ext"] = self.ext
+        return [], info
+
+
 @dataclass
 class Job:
     url: str
@@ -209,7 +226,10 @@ def build_ydl_opts(job: Job, out_dir: Path, hook, pp_hook, post_hook, logger=Non
     if job.subtitles:
         pps.append({"key": "FFmpegSubtitlesConvertor", "format": "vtt"})
     if job.output in AUDIO_OUTPUTS:
-        codec = {"ogg": "vorbis"}.get(job.output, job.output)
+        codec = job.output
+        if job.output == "ogg":
+            # Vorbis if this FFmpeg has it (Homebrew's doesn't); otherwise Opus, which is also an .ogg file.
+            codec = "vorbis" if "libvorbis" in ffmpeg_encoders() else "opus"
         pps.append({"key": "FFmpegExtractAudio", "preferredcodec": codec, "preferredquality": "192"})
     elif job.output in ("mp4", "mkv"):
         # Merging covers separate video+audio streams; the remux covers single-file downloads.
@@ -468,6 +488,8 @@ class DownloadManager:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 if has_ffmpeg and job.output in ReencodePP.EXTS:
                     ydl.add_post_processor(ReencodePP(ydl, job.output), when="post_process")
+                if has_ffmpeg and job.output == "ogg" and "libvorbis" not in ffmpeg_encoders():
+                    ydl.add_post_processor(RenameExtPP(ydl, "ogg"), when="post_process")
                 ydl.download([job.url])
             if job.items:
                 job.failed_items = sum(i["status"] == "failed" for i in job.items)
